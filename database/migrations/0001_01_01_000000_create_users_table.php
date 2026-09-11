@@ -29,8 +29,8 @@ return new class extends Migration
             $table->boolean('is_verified')->default(false);
 
             // Preferences
-            $table->foreignId('theme_id')->nullable()->constrained('themes')->nullOnDelete();
-            $table->foreignId('font_id')->nullable()->constrained('fonts')->nullOnDelete();
+            // $table->foreignId('theme_id')->nullable()->constrained('themes')->nullOnDelete();
+            // $table->foreignId('font_id')->nullable()->constrained('fonts')->nullOnDelete();
             $table->string('language')->default('en');
 
             // Status / presence

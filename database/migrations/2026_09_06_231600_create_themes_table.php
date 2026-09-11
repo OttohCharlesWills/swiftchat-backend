@@ -15,7 +15,7 @@ return new class extends Migration
 
             $table->string('name');
             $table->string('background_color');
-            $table->string('text_color')->nullable(); // null = auto-calculated
+            $table->string('text_color')->nullable();
             $table->string('accent_color')->nullable();
 
             $table->enum('type', ['preset', 'custom'])->default('custom');
@@ -24,10 +24,10 @@ return new class extends Migration
             $table->timestamps();
         });
 
-        // Replace the simple theme string on users with a proper relationship
+        // Add theme_id + font_id to users now that both tables exist
         Schema::table('users', function (Blueprint $table) {
-            $table->dropColumn('theme');
-            $table->foreignId('theme_id')->nullable()->constrained('themes')->nullOnDelete();
+            $table->foreignId('theme_id')->nullable()->after('avatar_url')->constrained('themes')->nullOnDelete();
+            $table->foreignId('font_id')->nullable()->after('theme_id')->constrained('fonts')->nullOnDelete();
         });
     }
 
@@ -35,8 +35,8 @@ return new class extends Migration
     {
         Schema::table('users', function (Blueprint $table) {
             $table->dropForeign(['theme_id']);
-            $table->dropColumn('theme_id');
-            $table->string('theme')->default('light');
+            $table->dropForeign(['font_id']);
+            $table->dropColumn(['theme_id', 'font_id']);
         });
 
         Schema::dropIfExists('themes');
