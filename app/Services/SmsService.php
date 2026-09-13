@@ -2,38 +2,40 @@
 
 namespace App\Services;
 
-use Twilio\Rest\Client;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class SmsService
 {
-    protected Client $client;
-    protected string $fromNumber;
+    protected string $apiKey;
+    protected string $senderId;
 
     public function __construct()
     {
-        // When using API Key + Secret (not Auth Token), the Account SID
-        // must be passed as the third argument.
-        $this->client = new Client(
-            config('services.twilio.api_key'),
-            config('services.twilio.api_secret'),
-            config('services.twilio.account_sid')
-        );
-
-        $this->fromNumber = config('services.twilio.from_number');
+        $this->apiKey = config('services.termii.api_key');
+        $this->senderId = config('services.termii.sender_id');
     }
 
     public function sendOtp(string $toNumber, string $otp): bool
     {
         try {
-            $this->client->messages->create($toNumber, [
-                'from' => $this->fromNumber,
-                'body' => "Your Gist verification code is: {$otp}. It expires in 5 minutes.",
+            $response = Http::post('https://api.ng.termii.com/api/sms/send', [
+                'to'      => $toNumber,
+                'from'    => $this->senderId,
+                'sms'     => "Your Swift Chat verification code is: {$otp}. It expires in 5 minutes.",
+                'type'    => 'plain',
+                'channel' => 'generic',
+                'api_key' => $this->apiKey,
             ]);
 
-            return true;
+            if ($response->successful() && ($response->json('code') === 'ok')) {
+                return true;
+            }
+
+            Log::error('Termii SMS failed: ' . $response->body());
+            return false;
         } catch (\Exception $e) {
-            Log::error('Twilio SMS failed: ' . $e->getMessage());
+            Log::error('Termii SMS exception: ' . $e->getMessage());
             return false;
         }
     }

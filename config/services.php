@@ -35,11 +35,9 @@ return [
         ],
     ],
 
-    'twilio' => [
-        'account_sid' => env('TWILIO_ACCOUNT_SID'),
-        'api_key'     => env('TWILIO_API_KEY'),
-        'api_secret'  => env('TWILIO_API_SECRET'),
-        'from_number' => env('TWILIO_FROM_NUMBER'),
+    'termii' => [
+        'api_key'   => env('TERMII_API_KEY'),
+        'sender_id' => env('TERMII_SENDER_ID', 'Termii'),
     ],
 
 ];
