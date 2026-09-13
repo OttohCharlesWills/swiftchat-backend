@@ -12,21 +12,23 @@ class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
 
-    protected $fillable = [
-        'phone_number',
-        'name',
-        'username',
-        'bio',
-        'avatar_url',
-        'profile_link',
-        'password',
-        'theme',
-        'font_id',
-        'language',
-        'last_seen_visibility',
-        'profile_photo_visibility',
-        'read_receipts_enabled',
-    ];
+protected $fillable = [
+    'phone_number',
+    'name',
+    'username',
+    'bio',
+    'avatar_url',
+    'profile_link',
+    'password',
+    'theme',
+    'font_id',
+    'language',
+    'last_seen_visibility',
+    'profile_photo_visibility',
+    'read_receipts_enabled',
+    'otp_code',
+    'otp_expires_at',
+];
 
     protected $hidden = [
         'password',
