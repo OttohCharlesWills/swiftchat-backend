@@ -24,7 +24,7 @@ Route::post('/desktop-session/{token}/verify', [DesktopSessionController::class,
 Route::get('/ping', fn () => response()->json(['status' => 'ok']));
 
 
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::post('/logout', [LoginController::class, 'logout']);
     Route::get('/me', function (\Illuminate\Http\Request $request) {
         return $request->user();

@@ -16,18 +16,26 @@ protected $fillable = [
     'phone_number',
     'name',
     'username',
+    'email',
     'bio',
     'avatar_url',
     'profile_link',
     'password',
+
+    // Email verification
+    'otp_code',
+    'otp_expires_at',
+    'is_verified',
+
+    // Preferences
     'theme',
     'font_id',
     'language',
+
+    // Privacy
     'last_seen_visibility',
     'profile_photo_visibility',
     'read_receipts_enabled',
-    'otp_code',
-    'otp_expires_at',
 ];
 
     protected $hidden = [
