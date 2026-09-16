@@ -15,7 +15,7 @@ Route::post('/register', [RegisterController::class, 'register']);
 // FIX ME: this route points at RegisterController::verifyOtp, which does
 // not exist on that controller — the method is called verifyAccount().
 // Either rename the method or point this route at 'verifyAccount'.
-Route::post('/verify-otp', [RegisterController::class, 'verifyOtp']);
+Route::post('/verify-otp', [RegisterController::class, 'verifyAccount']);
 Route::post('/request-verification-code', [RegisterController::class, 'requestVerificationCode']);
 
 Route::post('/login', [LoginController::class, 'login']);

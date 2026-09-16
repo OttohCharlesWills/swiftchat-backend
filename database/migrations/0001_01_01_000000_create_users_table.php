@@ -17,6 +17,7 @@ return new class extends Migration
             // Core identity
             $table->string('phone_number')->unique();
             $table->string('name');
+	    $table->string('email')->nullable()->unique();
             $table->string('username')->unique()->nullable();
             $table->string('bio')->nullable();
             $table->string('avatar_url')->nullable();
