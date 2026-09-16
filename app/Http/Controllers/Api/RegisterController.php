@@ -112,6 +112,7 @@ class RegisterController extends Controller
 
         return response()->json([
             'message' => 'Verification code sent to your email.',
+            'otp_expires_at' => $user->otp_expires_at,
         ], 200);
     }
 
