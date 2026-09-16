@@ -12,7 +12,11 @@ use App\Http\Controllers\Api\MessageController;
 use Illuminate\Http\Request;
 
 Route::post('/register', [RegisterController::class, 'register']);
+// FIX ME: this route points at RegisterController::verifyOtp, which does
+// not exist on that controller — the method is called verifyAccount().
+// Either rename the method or point this route at 'verifyAccount'.
 Route::post('/verify-otp', [RegisterController::class, 'verifyOtp']);
+Route::post('/request-verification-code', [RegisterController::class, 'requestVerificationCode']);
 
 Route::post('/login', [LoginController::class, 'login']);
 Route::post('/verify-login-otp', [LoginController::class, 'verifyLoginOtp']);
@@ -23,13 +27,19 @@ Route::post('/desktop-session/{token}/verify', [DesktopSessionController::class,
 
 Route::get('/ping', fn () => response()->json(['status' => 'ok']));
 
-
-Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
-    Route::post('/logout', [LoginController::class, 'logout']);
-    Route::get('/me', function (\Illuminate\Http\Request $request) {
+// Authenticated but NOT verification-gated — a freshly registered,
+// still-unverified user needs to be able to hit /me (to learn their own
+// is_verified status) and /logout. If these sat behind `verified.user`,
+// an unverified user could never even ask "am I verified?" without
+// already being verified.
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/me', function (Request $request) {
         return $request->user();
     });
+    Route::post('/logout', [LoginController::class, 'logout']);
+});
 
+Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::post('/contacts/sync', [ContactController::class, 'sync']);
     Route::get('/contacts', [ContactController::class, 'index']);
     Route::post('/contacts/{id}/favorite', [ContactController::class, 'toggleFavorite']);
@@ -46,7 +56,7 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::post('/themes', [ThemeController::class, 'store']);
     Route::post('/themes/select', [ThemeController::class, 'select']);
 
-        Route::get('/chats', [ChatController::class, 'index']);
+    Route::get('/chats', [ChatController::class, 'index']);
     Route::post('/chats/private', [ChatController::class, 'startPrivate']);
     Route::post('/chats/group', [ChatController::class, 'startGroup']);
 

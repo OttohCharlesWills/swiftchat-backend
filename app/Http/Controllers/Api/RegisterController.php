@@ -44,9 +44,17 @@ class RegisterController extends Controller
             'is_verified' => false,
         ]);
 
+        // Issue a token right away so the app can authenticate immediately
+        // (e.g. to call /me) even before the account is verified. Actions
+        // that require verification stay gated by the `verified.user`
+        // middleware on the routes that need it — this token alone doesn't
+        // unlock anything beyond "who am I".
+        $token = $user->createToken('auth_token')->plainTextToken;
+
         return response()->json([
             'message' => 'Account created. Please verify your account.',
-            'phone_number' => $user->phone_number,
+            'user' => $user,
+            'token' => $token,
             'is_verified' => false,
         ], 201);
     }
@@ -80,21 +88,18 @@ class RegisterController extends Controller
 
         $code = random_int(100000, 999999);
 
-        // Save email and verification code.
         $user->update([
             'email' => $request->email,
             'otp_code' => $code,
             'otp_expires_at' => now()->addMinutes(10),
         ]);
 
-        // Send code to email.
         $sent = $this->emailService->sendCode(
             $user->email,
             (string) $code
         );
 
         if (!$sent) {
-            // Remove the code if email delivery failed.
             $user->update([
                 'otp_code' => null,
                 'otp_expires_at' => null,
@@ -137,35 +142,33 @@ class RegisterController extends Controller
             ], 400);
         }
 
-        // No code has been requested.
         if (!$user->otp_code || !$user->otp_expires_at) {
             return response()->json([
                 'message' => 'Please request a verification code first.',
             ], 400);
         }
 
-        // Code has expired.
         if (now()->greaterThan($user->otp_expires_at)) {
             return response()->json([
                 'message' => 'Verification code expired.',
             ], 400);
         }
 
-        // Code is incorrect.
         if ((string) $user->otp_code !== (string) $request->code) {
             return response()->json([
                 'message' => 'Invalid verification code.',
             ], 400);
         }
 
-        // Account successfully verified.
         $user->update([
             'is_verified' => true,
             'otp_code' => null,
             'otp_expires_at' => null,
         ]);
 
-        // Create authentication token.
+        // A token already exists from registration in most cases, but issue
+        // a fresh one here too (e.g. covers verifying from a different
+        // device/session than the one that registered).
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
