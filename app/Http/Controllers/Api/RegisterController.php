@@ -91,7 +91,7 @@ class RegisterController extends Controller
         $user->update([
             'email' => $request->email,
             'otp_code' => $code,
-            'otp_expires_at' => now()->addMinutes(35),
+            'otp_expires_at' => now()->addMinutes(90),
         ]);
 
         $sent = $this->emailService->sendCode(
