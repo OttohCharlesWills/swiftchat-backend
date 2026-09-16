@@ -160,11 +160,16 @@ class RegisterController extends Controller
             ], 400);
         }
 
-        $user->update([
-            'is_verified' => true,
-            'otp_code' => null,
-            'otp_expires_at' => null,
-        ]);
+        // Set is_verified directly on the model rather than through
+        // update()'s mass assignment. update() silently drops any column
+        // not listed in the model's $fillable array with no error at
+        // all — that's almost certainly why this was never actually
+        // persisting: otp_code/otp_expires_at were fillable and cleared
+        // fine, but is_verified quietly never made it through.
+        $user->is_verified = true;
+        $user->otp_code = null;
+        $user->otp_expires_at = null;
+        $user->save();
 
         // A token already exists from registration in most cases, but issue
         // a fresh one here too (e.g. covers verifying from a different
