@@ -10,6 +10,11 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\MessageController;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Broadcast;
+
+Route::middleware('auth:sanctum')->post('/broadcasting/auth', function (Illuminate\Http\Request $request) {
+    return Broadcast::auth($request);
+});
 
 Route::post('/register', [RegisterController::class, 'register']);
 // FIX ME: this route points at RegisterController::verifyOtp, which does

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Chat;
 use App\Models\Message;
 use Illuminate\Http\Request;
+use App\Events\NewMessage;
 use Illuminate\Support\Facades\Validator;
 
 class MessageController extends Controller
@@ -49,6 +50,10 @@ class MessageController extends Controller
             'attachment_path' => $request->attachment_path,
             'reply_to_id'     => $request->reply_to_id,
         ]);
+
+        $message->load('sender');
+
+        broadcast(new NewMessage($message));
 
         return response()->json($message->load('sender'), 201);
     }
