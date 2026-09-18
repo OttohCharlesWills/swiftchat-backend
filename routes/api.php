@@ -12,6 +12,15 @@ use App\Http\Controllers\Api\MessageController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 
+Route::get('/app-version', function () {
+    return response()->json([
+        'version' => '1.1.0',
+        'version_code' => 2,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.1.0.apk',
+        'message' => 'Please update to access new features.',
+    ]);
+});
+
 Route::middleware('auth:sanctum')->post('/broadcasting/auth', function (Illuminate\Http\Request $request) {
     return Broadcast::auth($request);
 });
