@@ -10,14 +10,26 @@ use Illuminate\Support\Facades\Validator;
 class ChatController extends Controller
 {
     // List all chats the authenticated user is part of
-    public function index(Request $request)
-    {
-        $chats = $request->user()->belongsToMany(Chat::class, 'chat_participants')
-            ->with(['latestMessage.sender', 'users'])
-            ->get();
+public function index(Request $request)
+{
+    $authId = $request->user()->id;
 
-        return response()->json($chats);
-    }
+    $chats = $request->user()->belongsToMany(Chat::class, 'chat_participants')
+        ->with(['latestMessage.sender', 'users'])
+        ->get()
+        ->map(function ($chat) use ($authId) {
+            if ($chat->type === 'private') {
+                $otherUser = $chat->users->firstWhere('id', '!=', $authId);
+                $chat->display_name = $otherUser?->name;
+                $chat->display_avatar = $otherUser?->avatar ?? null;
+            } else {
+                $chat->display_name = $chat->name; // group chat name
+            }
+            return $chat;
+        });
+
+    return response()->json($chats);
+}
 
     // Start (or return existing) 1-on-1 chat with another user
     public function startPrivate(Request $request)
