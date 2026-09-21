@@ -9,27 +9,33 @@ use Illuminate\Support\Facades\Validator;
 
 class ChatController extends Controller
 {
-    // List all chats the authenticated user is part of
-public function index(Request $request)
-{
-    $authId = $request->user()->id;
+    // List all chats the authenticated user is part of, newest activity first
+    public function index(Request $request)
+    {
+        $authId = $request->user()->id;
 
-    $chats = $request->user()->belongsToMany(Chat::class, 'chat_participants')
-        ->with(['latestMessage.sender', 'users'])
-        ->get()
-        ->map(function ($chat) use ($authId) {
-            if ($chat->type === 'private') {
-                $otherUser = $chat->users->firstWhere('id', '!=', $authId);
-                $chat->display_name = $otherUser?->name;
-                $chat->display_avatar = $otherUser?->avatar ?? null;
-            } else {
-                $chat->display_name = $chat->name; // group chat name
-            }
-            return $chat;
-        });
+        $chats = $request->user()->belongsToMany(Chat::class, 'chat_participants')
+            ->with(['latestMessage.sender', 'users'])
+            // Sort by whichever is more recent: the chat's own updated_at
+            // (bumped when a message is sent — confirm your Message model's
+            // saving hook actually touches the parent chat's timestamp) or
+            // its created_at, so brand-new chats with no messages yet still
+            // sort correctly instead of falling to the bottom.
+            ->orderByDesc('chats.updated_at')
+            ->get()
+            ->map(function ($chat) use ($authId) {
+                if ($chat->type === 'private') {
+                    $otherUser = $chat->users->firstWhere('id', '!=', $authId);
+                    $chat->display_name = $otherUser?->name;
+                    $chat->display_avatar = $otherUser?->avatar ?? null;
+                } else {
+                    $chat->display_name = $chat->name; // group chat name
+                }
+                return $chat;
+            });
 
-    return response()->json($chats);
-}
+        return response()->json($chats);
+    }
 
     // Start (or return existing) 1-on-1 chat with another user
     public function startPrivate(Request $request)
