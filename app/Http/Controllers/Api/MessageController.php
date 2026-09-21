@@ -5,9 +5,13 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Chat;
 use App\Models\Message;
+use App\Models\User;
 use Illuminate\Http\Request;
 use App\Events\NewMessage;
 use Illuminate\Support\Facades\Validator;
+use Kreait\Firebase\Messaging\CloudMessage;
+use Kreait\Firebase\Messaging\Notification as FirebaseNotification;
+use Kreait\Laravel\Firebase\Facades\Firebase;
 
 class MessageController extends Controller
 {
@@ -19,7 +23,7 @@ class MessageController extends Controller
 
         $messages = $chat->messages()
             ->with('sender')
-            ->latest()
+            ->orderBy('created_at', 'desc')
             ->paginate(30);
 
         return response()->json($messages);
@@ -55,6 +59,8 @@ class MessageController extends Controller
 
         broadcast(new NewMessage($message));
 
+        $this->sendPushToOtherParticipants($request, $chat, $message);
+
         return response()->json($message->load('sender'), 201);
     }
 
@@ -75,5 +81,43 @@ class MessageController extends Controller
         $isParticipant = $chat->participants()->where('user_id', $request->user()->id)->exists();
 
         abort_unless($isParticipant, 403, 'You are not part of this chat.');
+    }
+
+    // Push a notification to every other participant with a stored FCM token.
+    // NOTE: I'm pulling user_id values off $chat->participants() the same way
+    // markRead() does, then loading each User separately. If `participants()`
+    // is a relation to a pivot/ChatParticipant model that already has a
+    // `user` relationship defined, you can simplify this to
+    // ->with('user')->get()->pluck('user') instead — tell me if so and I'll
+    // tighten it up.
+    private function sendPushToOtherParticipants(Request $request, Chat $chat, Message $message): void
+    {
+        $recipientIds = $chat->participants()
+            ->where('user_id', '!=', $request->user()->id)
+            ->pluck('user_id');
+
+        if ($recipientIds->isEmpty()) {
+            return;
+        }
+
+        $recipients = User::whereIn('id', $recipientIds)
+            ->whereNotNull('fcm_token')
+            ->get();
+
+        foreach ($recipients as $recipient) {
+            try {
+                $cloudMessage = CloudMessage::withTarget('token', $recipient->fcm_token)
+                    ->withNotification(FirebaseNotification::create(
+                        $request->user()->name,
+                        $message->type === 'text' ? $message->body : ucfirst($message->type)
+                    ))
+                    ->withData(['chat_id' => (string) $chat->id]);
+
+                Firebase::messaging()->send($cloudMessage);
+            } catch (\Throwable $e) {
+                // don't let a push failure break message sending
+                \Log::warning('FCM push failed', ['user_id' => $recipient->id, 'error' => $e->getMessage()]);
+            }
+        }
     }
 }

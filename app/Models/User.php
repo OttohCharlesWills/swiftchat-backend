@@ -21,6 +21,7 @@ protected $fillable = [
     'avatar_url',
     'profile_link',
     'password',
+    'fcm_token', // <-- add this
 
     // Email verification
     'otp_code',

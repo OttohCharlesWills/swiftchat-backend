@@ -21,9 +21,6 @@ Route::get('/app-version', function () {
     ]);
 });
 
-Route::middleware('auth:sanctum')->post('/broadcasting/auth', function (Illuminate\Http\Request $request) {
-    return Broadcast::auth($request);
-});
 
 Route::post('/register', [RegisterController::class, 'register']);
 // FIX ME: this route points at RegisterController::verifyOtp, which does
@@ -51,9 +48,22 @@ Route::middleware('auth:sanctum')->group(function () {
         return $request->user();
     });
     Route::post('/logout', [LoginController::class, 'logout']);
+
 });
 
 Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
+    
+    Route::post('/device-token', function (Request $request) {
+        $request->validate(['token' => 'required|string']);
+        $request->user()->update(['fcm_token' => $request->token]);
+        return response()->json(['status' => 'ok']);
+    });
+
+
+    Route::middleware('auth:sanctum')->post('/broadcasting/auth', function (Illuminate\Http\Request $request) {
+        return Broadcast::auth($request);
+    });
+
     Route::post('/contacts/sync', [ContactController::class, 'sync']);
     Route::get('/contacts', [ContactController::class, 'index']);
     Route::post('/contacts/{id}/favorite', [ContactController::class, 'toggleFavorite']);
