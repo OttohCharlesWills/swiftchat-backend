@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Validator;
 use Kreait\Firebase\Messaging\CloudMessage;
 use Kreait\Firebase\Messaging\Notification as FirebaseNotification;
 use Kreait\Laravel\Firebase\Facades\Firebase;
+use Cloudinary\Cloudinary as CloudinarySDK;
 
 class MessageController extends Controller
 {
@@ -119,5 +120,23 @@ class MessageController extends Controller
                 \Log::warning('FCM push failed', ['user_id' => $recipient->id, 'error' => $e->getMessage()]);
             }
         }
+    }
+
+    public function uploadAttachment(Request $request, $chatId)
+    {
+        $chat = Chat::findOrFail($chatId);
+        $this->authorizeParticipant($request, $chat);
+
+        $request->validate([
+            'file' => 'required|file|max:10240', // 10MB max
+        ]);
+
+        $uploaded = cloudinary()->upload($request->file('file')->getRealPath(), [
+            'folder' => 'chats',
+        ]);
+
+        return response()->json([
+            'url' => $uploaded->getSecurePath(),
+        ]);
     }
 }

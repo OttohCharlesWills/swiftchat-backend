@@ -16,7 +16,7 @@ Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.1.0',
         'version_code' => 2,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+2.apk',
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+3.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -87,4 +87,5 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::get('/chats/{chatId}/messages', [MessageController::class, 'index']);
     Route::post('/chats/{chatId}/messages', [MessageController::class, 'store']);
     Route::post('/chats/{chatId}/read', [MessageController::class, 'markRead']);
+    Route::post('/chats/{chatId}/upload-attachment', [MessageController::class, 'uploadAttachment']);
 });
