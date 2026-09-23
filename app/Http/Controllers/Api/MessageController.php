@@ -24,7 +24,7 @@ class MessageController extends Controller
 
         $messages = $chat->messages()
             ->with('sender')
-            ->orderBy('created_at', 'desc')
+            ->reorder('created_at', 'desc')
             ->paginate(30);
 
         return response()->json($messages);
