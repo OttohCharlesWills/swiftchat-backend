@@ -12,32 +12,32 @@ class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
 
-protected $fillable = [
-    'phone_number',
-    'name',
-    'username',
-    'email',
-    'bio',
-    'avatar_url',
-    'profile_link',
-    'password',
-    'fcm_token', // <-- add this
+    protected $fillable = [
+        'phone_number',
+        'name',
+        'username',
+        'email',
+        'bio',
+        'avatar_url',
+        'profile_link',
+        'password',
+        'fcm_token',
 
-    // Email verification
-    'otp_code',
-    'otp_expires_at',
-    'is_verified',
+        // Email verification
+        'otp_code',
+        'otp_expires_at',
+        'is_verified',
 
-    // Preferences
-    'theme',
-    'font_id',
-    'language',
+        // Preferences
+        'theme',
+        'font_id',
+        'language',
 
-    // Privacy
-    'last_seen_visibility',
-    'profile_photo_visibility',
-    'read_receipts_enabled',
-];
+        // Privacy
+        'last_seen_visibility',
+        'profile_photo_visibility',
+        'read_receipts_enabled',
+    ];
 
     protected $hidden = [
         'password',
@@ -46,10 +46,10 @@ protected $fillable = [
     ];
 
     protected $casts = [
-        'otp_expires_at'     => 'datetime',
-        'last_seen_at'       => 'datetime',
-        'is_verified'        => 'boolean',
-        'is_online'          => 'boolean',
+        'otp_expires_at' => 'datetime',
+        'last_seen_at' => 'datetime',
+        'is_verified' => 'boolean',
+        'is_online' => 'boolean',
         'read_receipts_enabled' => 'boolean',
     ];
 
@@ -69,4 +69,34 @@ protected $fillable = [
     {
         return $this->belongsTo(Theme::class);
     }
+
+    // =========================
+    // UPDATES
+    // =========================
+
+    public function updates()
+    {
+        return $this->hasMany(Update::class);
+    }
+
+    public function updateSettings()
+    {
+        return $this->hasOne(UpdateSetting::class);
+    }
+
+    public function updateViews()
+    {
+        return $this->hasMany(UpdateView::class, 'viewer_id');
+    }
+
+    public function updateReposts()
+    {
+        return $this->hasMany(UpdateRepost::class);
+    }
+
+    public function blockedUpdateContacts()
+    {
+        return $this->hasMany(UpdateBlockedContact::class);
+    }
 }
+

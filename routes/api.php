@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\MessageController;
 use Illuminate\Http\Request;
+use App\Http\Controllers\Api\UpdateController;
 use Illuminate\Support\Facades\Broadcast;
 
 Route::get('/app-version', function () {
@@ -93,4 +94,31 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::post('/chats/{chatId}/messages', [MessageController::class, 'store']);
     Route::post('/chats/{chatId}/read', [MessageController::class, 'markRead']);
     Route::post('/chats/{chatId}/upload-attachment', [MessageController::class, 'uploadAttachment']);
+
+
+    // =========================
+    // UPDATES
+    // =========================
+
+    // Create / view / delete
+    Route::get('/updates', [UpdateController::class, 'index']);
+    Route::post('/updates', [UpdateController::class, 'store']);
+    Route::get('/updates/{uuid}', [UpdateController::class, 'show']);
+    Route::post('/updates/{uuid}/view', [UpdateController::class, 'view']);
+    Route::delete('/updates/{uuid}', [UpdateController::class, 'destroy']);
+
+    // Reposts
+    Route::post('/updates/{uuid}/repost', [UpdateController::class, 'repost']);
+    Route::delete('/updates/{uuid}/repost', [UpdateController::class, 'removeRepost']);
+
+    // Update settings
+    Route::get('/updates/settings', [UpdateController::class, 'settings']);
+    Route::put('/updates/settings', [UpdateController::class, 'updateSettings']);
+
+    // Update visibility blocklist
+    Route::get('/updates/blocked-contacts', [UpdateController::class, 'blockedContacts']);
+    Route::post('/updates/blocked-contacts/{userId}', [UpdateController::class, 'blockContact']);
+    Route::delete('/updates/blocked-contacts/{userId}', [UpdateController::class, 'unblockContact']);
+
+
 });
