@@ -39,22 +39,28 @@ class ChatController extends Controller
 
     // Start (or return existing) 1-on-1 chat with another user
     public function startPrivate(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'user_id' => 'required|exists:users,id',
-        ]);
+{
+    $validator = Validator::make($request->all(), [
+        'user_id' => 'required|exists:users,id',
+    ]);
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
+    if ($validator->fails()) {
+        return response()->json(['errors' => $validator->errors()], 422);
+    }
 
-        $authId = $request->user()->id;
-        $otherId = $request->user_id;
+    $authId = $request->user()->id;
+    $otherId = (int) $request->user_id;
+    $isSelfChat = $otherId === $authId;
 
-        // Check if a private chat already exists between these two users
+    if ($isSelfChat) {
+        // "Saved Messages" — a private chat with only you in it. Can't
+        // reuse the two-sided lookup below (both conditions would be
+        // identical and match ANY of your private chats), so look
+        // specifically for a private chat with exactly one participant.
         $existing = Chat::where('type', 'private')
             ->whereHas('participants', fn ($q) => $q->where('user_id', $authId))
-            ->whereHas('participants', fn ($q) => $q->where('user_id', $otherId))
+            ->withCount('participants')
+            ->having('participants_count', 1)
             ->first();
 
         if ($existing) {
@@ -66,13 +72,33 @@ class ChatController extends Controller
             'created_by' => $authId,
         ]);
 
-        $chat->participants()->createMany([
-            ['user_id' => $authId],
-            ['user_id' => $otherId],
-        ]);
+        $chat->participants()->create(['user_id' => $authId]);
 
         return response()->json($chat->load('users'), 201);
     }
+
+    // Check if a private chat already exists between these two users
+    $existing = Chat::where('type', 'private')
+        ->whereHas('participants', fn ($q) => $q->where('user_id', $authId))
+        ->whereHas('participants', fn ($q) => $q->where('user_id', $otherId))
+        ->first();
+
+    if ($existing) {
+        return response()->json($existing->load('users'));
+    }
+
+    $chat = Chat::create([
+        'type'       => 'private',
+        'created_by' => $authId,
+    ]);
+
+    $chat->participants()->createMany([
+        ['user_id' => $authId],
+        ['user_id' => $otherId],
+    ]);
+
+    return response()->json($chat->load('users'), 201);
+}
 
     // Create a group chat
     public function startGroup(Request $request)

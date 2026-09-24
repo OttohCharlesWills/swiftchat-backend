@@ -15,8 +15,8 @@ use Illuminate\Support\Facades\Broadcast;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 3,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+3.apk',
+        'version_code' => 4,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+4.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -58,6 +58,10 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         $request->user()->update(['fcm_token' => $request->token]);
         return response()->json(['status' => 'ok']);
     });
+
+    Route::get('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'show']);
+    Route::post('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'update']);
+    Route::get('/users/{user}', [\App\Http\Controllers\Api\ProfileController::class, 'show']);
 
 
     Route::middleware('auth:sanctum')->post('/broadcasting/auth', function (Illuminate\Http\Request $request) {
