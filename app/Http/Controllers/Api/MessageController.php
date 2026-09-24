@@ -23,7 +23,7 @@ class MessageController extends Controller
         $this->authorizeParticipant($request, $chat);
 
         $messages = $chat->messages()
-            ->with('sender')
+            ->with(['sender', 'replyTo.sender'])
             ->reorder('created_at', 'desc')
             ->paginate(30);
 
@@ -56,25 +56,58 @@ class MessageController extends Controller
             'reply_to_id'     => $request->reply_to_id,
         ]);
 
-        $message->load('sender');
+        $message->load(['sender', 'replyTo.sender']);
 
         broadcast(new NewMessage($message));
 
         $this->sendPushToOtherParticipants($request, $chat, $message);
 
-        return response()->json($message->load('sender'), 201);
+        return response()->json($message, 201);
     }
 
     // Mark chat as read up to now
     public function markRead(Request $request, $chatId)
     {
         $chat = Chat::findOrFail($chatId);
+        $authId = $request->user()->id;
 
         $chat->participants()
-            ->where('user_id', $request->user()->id)
+            ->where('user_id', $authId)
             ->update(['last_read_at' => now()]);
 
+        // Also stamp the individual messages so ticks can be read straight
+        // off each message. Reading implies delivery, so set both — this
+        // is the "double blue tick" trigger for whoever sent them.
+        // NOTE: read_at is one column per message, which is unambiguous
+        // for a private chat but not fully correct for a group with
+        // multiple readers (first opener "claims" it) — fine for v1.
+        Message::where('chat_id', $chatId)
+            ->where('sender_id', '!=', $authId)
+            ->whereNull('read_at')
+            ->update([
+                'read_at' => now(),
+                'delivered_at' => now(),
+            ]);
+
         return response()->json(['message' => 'Chat marked as read.']);
+    }
+
+    // Called when a device receives a message live over Pusher — proof
+    // that device is online right now. Flips undelivered messages in this
+    // chat to "delivered" (double grey tick) for whoever sent them,
+    // without marking them read.
+    public function markDelivered(Request $request, $chatId)
+    {
+        $chat = Chat::findOrFail($chatId);
+        $this->authorizeParticipant($request, $chat);
+        $authId = $request->user()->id;
+
+        Message::where('chat_id', $chatId)
+            ->where('sender_id', '!=', $authId)
+            ->whereNull('delivered_at')
+            ->update(['delivered_at' => now()]);
+
+        return response()->json(['message' => 'Messages marked delivered.']);
     }
 
     private function authorizeParticipant(Request $request, Chat $chat): void
@@ -123,20 +156,20 @@ class MessageController extends Controller
     }
 
     public function uploadAttachment(Request $request, $chatId)
-{
-    $chat = Chat::findOrFail($chatId);
-    $this->authorizeParticipant($request, $chat);
+    {
+        $chat = Chat::findOrFail($chatId);
+        $this->authorizeParticipant($request, $chat);
 
-    $request->validate([
-        'file' => 'required|file|max:10240', // 10MB max
-    ]);
+        $request->validate([
+            'file' => 'required|file|max:10240', // 10MB max
+        ]);
 
-    $uploaded = cloudinary()->uploadApi()->upload($request->file('file')->getRealPath(), [
-        'folder' => 'chats',
-    ]);
+        $uploaded = cloudinary()->uploadApi()->upload($request->file('file')->getRealPath(), [
+            'folder' => 'chats',
+        ]);
 
-    return response()->json([
-        'url' => $uploaded['secure_url'],
-    ]);
-}
+        return response()->json([
+            'url' => $uploaded['secure_url'],
+        ]);
+    }
 }

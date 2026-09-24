@@ -10,6 +10,8 @@ class Message extends Model
 {
     use HasFactory;
 
+    protected $touches = ['chat'];
+
     protected $fillable = [
         'chat_id',
         'sender_id',

@@ -15,6 +15,7 @@ class ChatController extends Controller
         $authId = $request->user()->id;
 
         $chats = $request->user()->belongsToMany(Chat::class, 'chat_participants')
+            ->withPivot('last_read_at')
             ->with(['latestMessage.sender', 'users'])
             // Sort by whichever is more recent: the chat's own updated_at
             // (bumped when a message is sent — confirm your Message model's
@@ -31,6 +32,19 @@ class ChatController extends Controller
                 } else {
                     $chat->display_name = $chat->name; // group chat name
                 }
+
+                // Unread = messages someone else sent, since you last read
+                // this chat. Uses the same last_read_at pivot markRead()
+                // already writes to, so it stays correct for group chats
+                // too (unlike a single per-message read_at column, which
+                // can't represent "read by me but not by others").
+                $lastReadAt = $chat->pivot->last_read_at;
+
+                $chat->unread_count = $chat->messages()
+                    ->where('sender_id', '!=', $authId)
+                    ->when($lastReadAt, fn ($q) => $q->where('created_at', '>', $lastReadAt))
+                    ->count();
+
                 return $chat;
             });
 
