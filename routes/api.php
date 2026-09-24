@@ -62,6 +62,7 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::get('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'show']);
     Route::post('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'update']);
     Route::get('/users/{user}', [\App\Http\Controllers\Api\ProfileController::class, 'show']);
+    Route::post('/profile/avatar', [\App\Http\Controllers\Api\ProfileController::class, 'updateAvatar']);
 
 
     Route::middleware('auth:sanctum')->post('/broadcasting/auth', function (Illuminate\Http\Request $request) {

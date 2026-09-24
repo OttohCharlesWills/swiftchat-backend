@@ -40,27 +40,27 @@ class ProfileController extends Controller
     }
 
     public function updateAvatar(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'file' => 'required|image|max:5120', // 5MB — matches uploadFile()'s default field name
-        ]);
+{
+    $validator = Validator::make($request->all(), [
+        'file' => 'required|image|max:5120', // 5MB
+    ]);
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
-
-        $user = $request->user();
-
-        $uploaded = cloudinary()->upload(
-            $request->file('file')->getRealPath(),
-            ['folder' => 'avatars']
-        );
-
-        $user->avatar_url = $uploaded->getSecurePath();
-        $user->save();
-
-        return response()->json($user->fresh());
+    if ($validator->fails()) {
+        return response()->json(['errors' => $validator->errors()], 422);
     }
+
+    $user = $request->user();
+
+    $uploaded = cloudinary()->uploadApi()->upload(
+        $request->file('file')->getRealPath(),
+        ['folder' => 'avatars']
+    );
+
+    $user->avatar_url = $uploaded['secure_url'];
+    $user->save();
+
+    return response()->json($user->fresh());
+}
 
     public function show(Request $request, \App\Models\User $user)
     {

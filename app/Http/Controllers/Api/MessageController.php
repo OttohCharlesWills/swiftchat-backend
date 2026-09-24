@@ -123,20 +123,20 @@ class MessageController extends Controller
     }
 
     public function uploadAttachment(Request $request, $chatId)
-    {
-        $chat = Chat::findOrFail($chatId);
-        $this->authorizeParticipant($request, $chat);
+{
+    $chat = Chat::findOrFail($chatId);
+    $this->authorizeParticipant($request, $chat);
 
-        $request->validate([
-            'file' => 'required|file|max:10240', // 10MB max
-        ]);
+    $request->validate([
+        'file' => 'required|file|max:10240', // 10MB max
+    ]);
 
-        $uploaded = cloudinary()->upload($request->file('file')->getRealPath(), [
-            'folder' => 'chats',
-        ]);
+    $uploaded = cloudinary()->uploadApi()->upload($request->file('file')->getRealPath(), [
+        'folder' => 'chats',
+    ]);
 
-        return response()->json([
-            'url' => $uploaded->getSecurePath(),
-        ]);
-    }
+    return response()->json([
+        'url' => $uploaded['secure_url'],
+    ]);
+}
 }
