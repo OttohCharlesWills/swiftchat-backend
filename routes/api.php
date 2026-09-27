@@ -17,7 +17,7 @@ Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
         'version_code' => 5,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+5.apk',
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+6.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -90,10 +90,43 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::post('/chats/private', [ChatController::class, 'startPrivate']);
     Route::post('/chats/group', [ChatController::class, 'startGroup']);
 
-    Route::get('/chats/{chatId}/messages', [MessageController::class, 'index']);
-    Route::post('/chats/{chatId}/messages', [MessageController::class, 'store']);
-    Route::post('/chats/{chatId}/read', [MessageController::class, 'markRead']);
-    Route::post('/chats/{chatId}/upload-attachment', [MessageController::class, 'uploadAttachment']);
+    // Existing message routes
+    Route::get(
+        '/chats/{chatId}/messages',
+        [MessageController::class, 'index']
+    );
+
+    Route::post(
+        '/chats/{chatId}/messages',
+        [MessageController::class, 'store']
+    );
+
+    Route::post(
+        '/chats/{chatId}/read',
+        [MessageController::class, 'markRead']
+    );
+
+    Route::post(
+        '/chats/{chatId}/messages/delivered',
+        [MessageController::class, 'markDelivered']
+    );
+
+    Route::post(
+        '/chats/{chatId}/upload-attachment',
+        [MessageController::class, 'uploadAttachment']
+    );
+
+    // Delete for me
+    Route::delete(
+        '/chats/{chatId}/messages/{messageId}',
+        [MessageController::class, 'destroy']
+    );
+
+    // Delete for everyone
+    Route::delete(
+        '/chats/{chatId}/messages/{messageId}/for-everyone',
+        [MessageController::class, 'destroyForEveryone']
+    );
 
 
     // =========================

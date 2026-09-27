@@ -2,85 +2,127 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Events\MessageDeleted;
+use App\Events\NewMessage;
 use App\Http\Controllers\Controller;
 use App\Models\Chat;
 use App\Models\Message;
+use App\Models\MessageDeletion;
 use App\Models\User;
 use Illuminate\Http\Request;
-use App\Events\NewMessage;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
+use Kreait\Firebase\Messaging\AndroidConfig;
 use Kreait\Firebase\Messaging\CloudMessage;
 use Kreait\Firebase\Messaging\Notification as FirebaseNotification;
 use Kreait\Laravel\Firebase\Facades\Firebase;
-use Cloudinary\Cloudinary as CloudinarySDK;
 
 class MessageController extends Controller
 {
-    // List messages in a chat (paginated)
+    // ============================================================
+    // LIST MESSAGES
+    // ============================================================
+
     public function index(Request $request, $chatId)
     {
         $chat = Chat::findOrFail($chatId);
+
         $this->authorizeParticipant($request, $chat);
 
+        $userId = $request->user()->id;
+
         $messages = $chat->messages()
-            ->with(['sender', 'replyTo.sender'])
+            ->whereDoesntHave('deletions', function ($query) use ($userId) {
+                $query->where('user_id', $userId);
+            })
+            ->with([
+                'sender',
+                'replyTo.sender',
+            ])
             ->reorder('created_at', 'desc')
             ->paginate(30);
 
         return response()->json($messages);
     }
 
-    // Send a message
+    // ============================================================
+    // SEND MESSAGE
+    // ============================================================
+
     public function store(Request $request, $chatId)
     {
         $chat = Chat::findOrFail($chatId);
+
         $this->authorizeParticipant($request, $chat);
 
         $validator = Validator::make($request->all(), [
-            'body'            => 'required_without:attachment_path|string|nullable',
-            'type'            => 'in:text,image,video,file,audio',
+            'body' => 'required_without:attachment_path|string|nullable',
+            'type' => 'nullable|in:text,image,video,file,audio',
             'attachment_path' => 'nullable|string',
-            'reply_to_id'     => 'nullable|exists:messages,id',
+            'reply_to_id' => 'nullable|exists:messages,id',
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return response()->json([
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        // If replying, make sure the reply message belongs
+        // to this same chat.
+        if ($request->reply_to_id) {
+            $replyMessage = Message::find($request->reply_to_id);
+
+            if (!$replyMessage || $replyMessage->chat_id != $chat->id) {
+                return response()->json([
+                    'message' => 'Invalid reply message.',
+                ], 422);
+            }
         }
 
         $message = Message::create([
-            'chat_id'         => $chat->id,
-            'sender_id'       => $request->user()->id,
-            'body'            => $request->body, // gets encrypted automatically via the model
-            'type'            => $request->type ?? 'text',
+            'chat_id' => $chat->id,
+            'sender_id' => $request->user()->id,
+            'body' => $request->body,
+            'type' => $request->type ?? 'text',
             'attachment_path' => $request->attachment_path,
-            'reply_to_id'     => $request->reply_to_id,
+            'reply_to_id' => $request->reply_to_id,
         ]);
 
-        $message->load(['sender', 'replyTo.sender']);
+        $message->load([
+            'sender',
+            'replyTo.sender',
+        ]);
 
         broadcast(new NewMessage($message));
 
-        $this->sendPushToOtherParticipants($request, $chat, $message);
+        $this->sendPushToOtherParticipants(
+            $request,
+            $chat,
+            $message
+        );
 
         return response()->json($message, 201);
     }
 
-    // Mark chat as read up to now
+    // ============================================================
+    // MARK READ
+    // ============================================================
+
     public function markRead(Request $request, $chatId)
     {
         $chat = Chat::findOrFail($chatId);
+
+        $this->authorizeParticipant($request, $chat);
+
         $authId = $request->user()->id;
 
         $chat->participants()
             ->where('user_id', $authId)
-            ->update(['last_read_at' => now()]);
+            ->update([
+                'last_read_at' => now(),
+            ]);
 
-        // Also stamp the individual messages so ticks can be read straight
-        // off each message. Reading implies delivery, so set both — this
-        // is the "double blue tick" trigger for whoever sent them.
-        // NOTE: read_at is one column per message, which is unambiguous
-        // for a private chat but not fully correct for a group with
-        // multiple readers (first opener "claims" it) — fine for v1.
         Message::where('chat_id', $chatId)
             ->where('sender_id', '!=', $authId)
             ->whereNull('read_at')
@@ -89,44 +131,181 @@ class MessageController extends Controller
                 'delivered_at' => now(),
             ]);
 
-        return response()->json(['message' => 'Chat marked as read.']);
+        return response()->json([
+            'message' => 'Chat marked as read.',
+        ]);
     }
 
-    // Called when a device receives a message live over Pusher — proof
-    // that device is online right now. Flips undelivered messages in this
-    // chat to "delivered" (double grey tick) for whoever sent them,
-    // without marking them read.
+    // ============================================================
+    // MARK DELIVERED
+    // ============================================================
+
     public function markDelivered(Request $request, $chatId)
     {
         $chat = Chat::findOrFail($chatId);
+
         $this->authorizeParticipant($request, $chat);
+
         $authId = $request->user()->id;
 
         Message::where('chat_id', $chatId)
             ->where('sender_id', '!=', $authId)
             ->whereNull('delivered_at')
-            ->update(['delivered_at' => now()]);
+            ->update([
+                'delivered_at' => now(),
+            ]);
 
-        return response()->json(['message' => 'Messages marked delivered.']);
+        return response()->json([
+            'message' => 'Messages marked delivered.',
+        ]);
     }
 
-    private function authorizeParticipant(Request $request, Chat $chat): void
-    {
-        $isParticipant = $chat->participants()->where('user_id', $request->user()->id)->exists();
+    // ============================================================
+    // DELETE FOR ME
+    // ============================================================
 
-        abort_unless($isParticipant, 403, 'You are not part of this chat.');
+    public function destroy(
+        Request $request,
+        $chatId,
+        $messageId
+    ) {
+        $chat = Chat::findOrFail($chatId);
+
+        $this->authorizeParticipant($request, $chat);
+
+        $message = Message::where('chat_id', $chatId)
+            ->where('id', $messageId)
+            ->firstOrFail();
+
+        MessageDeletion::firstOrCreate([
+            'message_id' => $message->id,
+            'user_id' => $request->user()->id,
+        ]);
+
+        return response()->json([
+            'message' => 'Message deleted for you.',
+            'delete_type' => 'for_me',
+            'message_id' => $message->id,
+        ]);
     }
 
-    // Push a notification to every other participant with a stored FCM token.
-    // NOTE: I'm pulling user_id values off $chat->participants() the same way
-    // markRead() does, then loading each User separately. If `participants()`
-    // is a relation to a pivot/ChatParticipant model that already has a
-    // `user` relationship defined, you can simplify this to
-    // ->with('user')->get()->pluck('user') instead — tell me if so and I'll
-    // tighten it up.
-    private function sendPushToOtherParticipants(Request $request, Chat $chat, Message $message): void
+    // ============================================================
+    // DELETE FOR EVERYONE
+    // ============================================================
+
+    public function destroyForEveryone(
+        Request $request,
+        $chatId,
+        $messageId
+    ) {
+        $chat = Chat::findOrFail($chatId);
+
+        $this->authorizeParticipant($request, $chat);
+
+        $message = Message::where('chat_id', $chatId)
+            ->where('id', $messageId)
+            ->firstOrFail();
+
+        // Only the original sender can delete for everyone.
+        if ($message->sender_id !== $request->user()->id) {
+            return response()->json([
+                'message' => 'Only the sender can delete this message for everyone.',
+            ], 403);
+        }
+
+        // 20-minute limit.
+        if ($message->created_at->lt(now()->subMinutes(20))) {
+            return response()->json([
+                'message' => 'This message is older than 20 minutes and can only be deleted for you.',
+            ], 422);
+        }
+
+        if (!$message->is_deleted) {
+            $message->update([
+                'is_deleted' => true,
+                'deleted_at' => now(),
+                'body' => null,
+                'attachment_path' => null,
+            ]);
+        }
+
+        $message->load([
+            'sender',
+            'replyTo.sender',
+        ]);
+
+        broadcast(new MessageDeleted(
+            $message->id,
+            $chat->id,
+            true
+        ));
+
+        return response()->json([
+            'message' => 'Message deleted for everyone.',
+            'delete_type' => 'for_everyone',
+            'message_id' => $message->id,
+        ]);
+    }
+
+    // ============================================================
+    // UPLOAD ATTACHMENT
+    // ============================================================
+
+    public function uploadAttachment(Request $request, $chatId)
     {
-        $recipientIds = $chat->participants()
+        $chat = Chat::findOrFail($chatId);
+
+        $this->authorizeParticipant($request, $chat);
+
+        $request->validate([
+            'file' => 'required|file|max:10240',
+        ]);
+
+        $uploaded = cloudinary()
+            ->uploadApi()
+            ->upload(
+                $request->file('file')->getRealPath(),
+                [
+                    'folder' => 'chats',
+                ]
+            );
+
+        return response()->json([
+            'url' => $uploaded['secure_url'],
+        ]);
+    }
+
+    // ============================================================
+    // AUTHORIZE PARTICIPANT
+    // ============================================================
+
+    private function authorizeParticipant(
+        Request $request,
+        Chat $chat
+    ): void {
+        $isParticipant = $chat
+            ->participants()
+            ->where('user_id', $request->user()->id)
+            ->exists();
+
+        abort_unless(
+            $isParticipant,
+            403,
+            'You are not part of this chat.'
+        );
+    }
+
+    // ============================================================
+    // PUSH NOTIFICATION
+    // ============================================================
+
+    private function sendPushToOtherParticipants(
+        Request $request,
+        Chat $chat,
+        Message $message
+    ): void {
+        $recipientIds = $chat
+            ->participants()
             ->where('user_id', '!=', $request->user()->id)
             ->pluck('user_id');
 
@@ -140,36 +319,46 @@ class MessageController extends Controller
 
         foreach ($recipients as $recipient) {
             try {
-                $cloudMessage = CloudMessage::withTarget('token', $recipient->fcm_token)
-                    ->withNotification(FirebaseNotification::create(
-                        $request->user()->name,
-                        $message->type === 'text' ? $message->body : ucfirst($message->type)
-                    ))
-                    ->withData(['chat_id' => (string) $chat->id]);
+                $body = $message->type === 'text'
+                    ? ($message->body ?? 'New message')
+                    : ucfirst($message->type);
+
+                $cloudMessage = CloudMessage::withTarget(
+                    'token',
+                    $recipient->fcm_token
+                )
+                    ->withNotification(
+                        FirebaseNotification::create(
+                            $request->user()->name,
+                            $body
+                        )
+                    )
+                    ->withData([
+                        'type' => 'chat_message',
+                        'chat_id' => (string) $chat->id,
+                        'message_id' => (string) $message->id,
+                        'sender_id' => (string) $request->user()->id,
+                    ])
+                    ->withAndroidConfig(
+                        AndroidConfig::fromArray([
+                            'priority' => 'high',
+                            'notification' => [
+                                'channel_id' => 'chat_messages',
+                                'sound' => 'default',
+                            ],
+                        ])
+                    );
 
                 Firebase::messaging()->send($cloudMessage);
             } catch (\Throwable $e) {
-                // don't let a push failure break message sending
-                \Log::warning('FCM push failed', ['user_id' => $recipient->id, 'error' => $e->getMessage()]);
+                Log::warning(
+                    'FCM push failed',
+                    [
+                        'user_id' => $recipient->id,
+                        'error' => $e->getMessage(),
+                    ]
+                );
             }
         }
-    }
-
-    public function uploadAttachment(Request $request, $chatId)
-    {
-        $chat = Chat::findOrFail($chatId);
-        $this->authorizeParticipant($request, $chat);
-
-        $request->validate([
-            'file' => 'required|file|max:10240', // 10MB max
-        ]);
-
-        $uploaded = cloudinary()->uploadApi()->upload($request->file('file')->getRealPath(), [
-            'folder' => 'chats',
-        ]);
-
-        return response()->json([
-            'url' => $uploaded['secure_url'],
-        ]);
     }
 }
