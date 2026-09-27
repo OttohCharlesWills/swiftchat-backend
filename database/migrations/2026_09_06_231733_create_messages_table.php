@@ -23,7 +23,6 @@ return new class extends Migration
             $table->json('deleted_for_user_ids')->nullable();
 
             $table->boolean('is_edited')->default(false);
-            $table->boolean('is_deleted')->default(false);
             $table->timestamp('delivered_at')->nullable();
             $table->timestamp('read_at')->nullable();
 
