@@ -30,6 +30,10 @@ class UpdateController extends Controller
             'media' => 'required_if:type,image,video|file|max:102400',
         ]);
 
+        // Validation does NOT cast types. Multipart/form fields arrive as
+        // strings, and Carbon 3 requires int|float, so cast explicitly.
+        $durationHours = (int) $validated['duration_hours'];
+
         if ($validated['type'] === 'text' && $request->hasFile('media')) {
             return response()->json([
                 'message' => 'Text Updates cannot contain media.'
@@ -79,7 +83,8 @@ class UpdateController extends Controller
         $update = DB::transaction(function () use (
             $validated,
             $user,
-            $cloudinaryData
+            $cloudinaryData,
+            $durationHours
         ) {
             return Update::create([
                 'uuid' => (string) Str::uuid(),
@@ -96,11 +101,9 @@ class UpdateController extends Controller
                 'cloudinary_resource_type' =>
                     $cloudinaryData['resource_type'] ?? null,
 
-                'duration_hours' => $validated['duration_hours'],
+                'duration_hours' => $durationHours,
 
-                'expires_at' => now()->addHours(
-                    $validated['duration_hours']
-                ),
+                'expires_at' => now()->addHours($durationHours),
 
                 'allow_repost' =>
                     $validated['allow_repost'] ?? true,
@@ -266,6 +269,9 @@ class UpdateController extends Controller
             'caption' => 'nullable|string|max:5000',
         ]);
 
+        // Cast: validated values stay strings; Carbon 3 needs int|float.
+        $durationHours = (int) $validated['duration_hours'];
+
         $user = $request->user();
 
         $originalUpdate = Update::active()
@@ -315,7 +321,8 @@ class UpdateController extends Controller
         $repostedUpdate = DB::transaction(function () use (
             $originalUpdate,
             $user,
-            $validated
+            $validated,
+            $durationHours
         ) {
             $newUpdate = Update::create([
                 'uuid' => (string) Str::uuid(),
@@ -337,12 +344,10 @@ class UpdateController extends Controller
                 'cloudinary_resource_type' =>
                     $originalUpdate->cloudinary_resource_type,
 
-                'duration_hours' => $validated['duration_hours'],
+                'duration_hours' => $durationHours,
 
                 // Repost gets its OWN lifetime.
-                'expires_at' => now()->addHours(
-                    $validated['duration_hours']
-                ),
+                'expires_at' => now()->addHours($durationHours),
 
                 // Eze can decide whether people can repost Eze's
                 // repost.
@@ -511,4 +516,3 @@ class UpdateController extends Controller
 
 
 }
-
