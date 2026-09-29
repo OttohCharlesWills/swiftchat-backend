@@ -19,9 +19,15 @@ class UpdateView extends Model
         'viewed_at' => 'datetime',
     ];
 
-    public function update()
+    // Renamed from update() — that name collides with Eloquent's own
+    // built-in Model::update(array $attributes, array $options) method,
+    // which every model inherits. Declaring a same-named method with a
+    // different signature is a fatal "declaration must be compatible"
+    // error, and it crashes the moment this class is loaded at all
+    // (so every endpoint touching UpdateView broke, not just this one).
+    public function updatePost()
     {
-        return $this->belongsTo(Update::class);
+        return $this->belongsTo(Update::class, 'update_id');
     }
 
     public function viewer()
@@ -29,4 +35,3 @@ class UpdateView extends Model
         return $this->belongsTo(User::class, 'viewer_id');
     }
 }
-
