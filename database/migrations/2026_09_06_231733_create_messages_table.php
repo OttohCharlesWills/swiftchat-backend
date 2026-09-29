@@ -16,6 +16,7 @@ return new class extends Migration
 
             $table->text('body')->nullable();       // stored ENCRYPTED via Laravel Crypt
             $table->enum('type', ['text', 'image', 'video', 'file', 'audio'])->default('text');
+            $table->unsignedSmallInteger('duration_seconds')->nullable();
             $table->string('attachment_path')->nullable();
 
             $table->foreignId('reply_to_id')->nullable()->constrained('messages')->nullOnDelete();

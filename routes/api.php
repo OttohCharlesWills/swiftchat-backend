@@ -60,6 +60,11 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         return response()->json(['status' => 'ok']);
     });
 
+    Route::post(
+        '/chats/{chatId}/upload-voice',
+        [MessageController::class, 'uploadVoice']
+    );
+
     Route::get('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'show']);
     Route::post('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'update']);
     Route::get('/users/{user}', [\App\Http\Controllers\Api\ProfileController::class, 'show']);

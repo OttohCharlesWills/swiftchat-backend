@@ -9,6 +9,7 @@ use App\Models\Chat;
 use App\Models\Message;
 use App\Models\MessageDeletion;
 use App\Models\User;
+use App\Services\SupabaseService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
@@ -19,6 +20,11 @@ use Kreait\Laravel\Firebase\Facades\Firebase;
 
 class MessageController extends Controller
 {
+    public function __construct(
+        protected SupabaseService $supabase
+    ) {
+    }
+
     // ============================================================
     // LIST MESSAGES
     // ============================================================
@@ -60,6 +66,8 @@ class MessageController extends Controller
             'type' => 'nullable|in:text,image,video,file,audio',
             'attachment_path' => 'nullable|string',
             'reply_to_id' => 'nullable|exists:messages,id',
+            // Length of a voice note in seconds (audio messages only).
+            'duration_seconds' => 'nullable|integer|min:0|max:3600',
         ]);
 
         if ($validator->fails()) {
@@ -80,13 +88,18 @@ class MessageController extends Controller
             }
         }
 
+        $type = $request->type ?? 'text';
+
         $message = Message::create([
             'chat_id' => $chat->id,
             'sender_id' => $request->user()->id,
             'body' => $request->body,
-            'type' => $request->type ?? 'text',
+            'type' => $type,
             'attachment_path' => $request->attachment_path,
             'reply_to_id' => $request->reply_to_id,
+            'duration_seconds' => $type === 'audio'
+                ? $request->duration_seconds
+                : null,
         ]);
 
         $message->load([
@@ -207,7 +220,7 @@ class MessageController extends Controller
             ->firstOrFail();
 
         // Only the original sender can delete for everyone.
-        if ($message->sender_id !== $request->user()->id) {
+        if ((int) $message->sender_id !== (int) $request->user()->id) {
             return response()->json([
                 'message' => 'Only the sender can delete this message for everyone.',
             ], 403);
@@ -221,12 +234,29 @@ class MessageController extends Controller
         }
 
         if (!$message->is_deleted) {
+            // Remember the voice note file so we can remove it from
+            // Supabase after the message row is cleared.
+            $voiceUrl = $message->type === 'audio'
+                ? $message->attachment_path
+                : null;
+
             $message->update([
                 'is_deleted' => true,
                 'deleted_at' => now(),
                 'body' => null,
                 'attachment_path' => null,
             ]);
+
+            if ($voiceUrl) {
+                try {
+                    $this->supabase->deleteByUrl($voiceUrl);
+                } catch (\Throwable $e) {
+                    Log::warning('Supabase voice delete failed', [
+                        'message_id' => $message->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
         }
 
         $message->load([
@@ -276,6 +306,56 @@ class MessageController extends Controller
     }
 
     // ============================================================
+    // UPLOAD VOICE NOTE (Supabase Storage)
+    // ============================================================
+
+    public function uploadVoice(Request $request, $chatId)
+    {
+        $chat = Chat::findOrFail($chatId);
+
+        $this->authorizeParticipant($request, $chat);
+
+        $request->validate([
+            'file' => 'required|file|max:10240',
+        ]);
+
+        $file = $request->file('file');
+
+        // Checked by extension: the server-side mime sniffing of .m4a
+        // files is inconsistent (audio/mp4, audio/x-m4a, video/mp4).
+        $allowed = ['m4a', 'aac', 'mp3', 'ogg', 'opus', 'wav', 'webm', 'mp4', '3gp'];
+
+        $ext = strtolower($file->getClientOriginalExtension());
+
+        if (!in_array($ext, $allowed, true)) {
+            return response()->json([
+                'message' => 'Unsupported audio format.',
+            ], 422);
+        }
+
+        try {
+            $uploaded = $this->supabase->uploadVoice(
+                $file,
+                'chats/' . $chat->id
+            );
+        } catch (\Throwable $e) {
+            Log::error('Voice note upload failed', [
+                'chat_id' => $chat->id,
+                'user_id' => $request->user()->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Could not upload voice note.',
+            ], 500);
+        }
+
+        return response()->json([
+            'url' => $uploaded['url'],
+        ]);
+    }
+
+    // ============================================================
     // AUTHORIZE PARTICIPANT
     // ============================================================
 
@@ -319,9 +399,13 @@ class MessageController extends Controller
 
         foreach ($recipients as $recipient) {
             try {
-                $body = $message->type === 'text'
-                    ? ($message->body ?? 'New message')
-                    : ucfirst($message->type);
+                if ($message->type === 'text') {
+                    $body = $message->body ?? 'New message';
+                } elseif ($message->type === 'audio') {
+                    $body = 'Voice message';
+                } else {
+                    $body = ucfirst($message->type);
+                }
 
                 $cloudMessage = CloudMessage::withTarget(
                     'token',
