@@ -117,7 +117,8 @@ class UpdateController extends Controller
     }
 
     /**
-     * Get Updates visible to the authenticated user.
+     * Get Updates visible to the authenticated user (contacts only —
+     * this intentionally excludes the viewer's own Updates; see mine()).
      */
     public function index(Request $request)
     {
@@ -140,6 +141,38 @@ class UpdateController extends Controller
             ->whereNotIn('user_id', $blockedUserIds)
             ->latest()
             ->get();
+
+        $this->attachViewedFlag($updates, $userId);
+
+        return response()->json([
+            'updates' => $updates,
+        ]);
+    }
+
+    /**
+     * Get the authenticated user's own active Updates.
+     *
+     * The "My Update" card in the app needs this — index() deliberately
+     * excludes the viewer's own posts, so without this endpoint a freshly
+     * posted Update never shows up anywhere for its own author.
+     */
+    public function mine(Request $request)
+    {
+        $userId = $request->user()->id;
+
+        $updates = Update::query()
+            ->with('user')
+            ->active()
+            ->where('user_id', $userId)
+            // Oldest first: the story viewer plays a person's updates in
+            // the order they were posted.
+            ->oldest()
+            ->get();
+
+        // You've implicitly "seen" your own Updates.
+        $updates->each(function ($update) {
+            $update->viewed_by_me = true;
+        });
 
         return response()->json([
             'updates' => $updates,
@@ -257,6 +290,23 @@ class UpdateController extends Controller
         if ($isBlocked) {
             abort(403, 'You cannot view this Update.');
         }
+    }
+
+    /**
+     * Tags each Update in the collection with whether the given viewer
+     * has already seen it, so the app can render the story ring correctly
+     * without an extra request per Update.
+     */
+    private function attachViewedFlag($updates, int $viewerId): void
+    {
+        $viewedIds = UpdateView::where('viewer_id', $viewerId)
+            ->whereIn('update_id', $updates->pluck('id'))
+            ->pluck('update_id')
+            ->all();
+
+        $updates->each(function ($update) use ($viewedIds) {
+            $update->viewed_by_me = in_array($update->id, $viewedIds);
+        });
     }
 
     /**

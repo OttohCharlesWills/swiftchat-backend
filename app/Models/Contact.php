@@ -34,4 +34,14 @@ class Contact extends Model
     {
         return $this->belongsTo(User::class, 'contact_user_id');
     }
+
+    public static function linkRegisteredUser(User $user): void
+    {
+        static::where('phone_number', $user->phone_number)
+            ->where('user_id', '!=', $user->id)
+            ->update([
+                'contact_user_id' => $user->id,
+                'is_registered'   => true,
+            ]);
+    }
 }

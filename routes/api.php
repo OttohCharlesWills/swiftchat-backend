@@ -16,8 +16,8 @@ use Illuminate\Support\Facades\Broadcast;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 7,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+7.apk',
+        'version_code' => 8,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+8.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -70,6 +70,8 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         return Broadcast::auth($request);
     });
 
+    Route::get('/updates/mine', [UpdateController::class, 'mine']);
+
     Route::post('/contacts/sync', [ContactController::class, 'sync']);
     Route::get('/contacts', [ContactController::class, 'index']);
     Route::post('/contacts/{id}/favorite', [ContactController::class, 'toggleFavorite']);
@@ -116,17 +118,20 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         [MessageController::class, 'uploadAttachment']
     );
 
-    // Delete for me
-    Route::delete(
-        '/chats/{chatId}/messages/{messageId}',
+// Delete for me (POST alias, used by the Flutter app)
+    Route::post(
+        '/chats/{chatId}/messages/{messageId}/delete',
         [MessageController::class, 'destroy']
     );
 
-    // Delete for everyone
-    Route::delete(
-        '/chats/{chatId}/messages/{messageId}/for-everyone',
+    // Delete for everyone (POST alias)
+    Route::post(
+        '/chats/{chatId}/messages/{messageId}/delete-for-everyone',
         [MessageController::class, 'destroyForEveryone']
     );
+
+    Route::post('/contacts/lookup', [ContactController::class, 'lookup'])
+    ->middleware('throttle:30,1'); // stops people scanning numbers in bulk
 
 
     // =========================
