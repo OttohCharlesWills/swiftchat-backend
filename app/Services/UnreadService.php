@@ -10,9 +10,9 @@ class UnreadService
     /**
      * Total number of unread messages across every chat the user is in.
      *
-     * Used for the app-icon badge and for the notification count.
-     * Messages the user sent, messages deleted for everyone, and messages
-     * the user deleted "for me" are not counted.
+     * Used for the number on the app icon and in notifications.
+     * Not counted: messages the user sent, messages deleted for everyone,
+     * and messages the user deleted "for me" (deleted_for_user_ids).
      */
     public static function forUser(int $userId): int
     {
@@ -32,8 +32,9 @@ class UnreadService
                 $query->whereNull('is_deleted')
                     ->orWhere('is_deleted', false);
             })
-            ->whereDoesntHave('deletions', function ($query) use ($userId) {
-                $query->where('user_id', $userId);
+            ->where(function ($query) use ($userId) {
+                $query->whereNull('deleted_for_user_ids')
+                    ->orWhereJsonDoesntContain('deleted_for_user_ids', $userId);
             })
             ->count();
     }

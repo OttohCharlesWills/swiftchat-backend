@@ -3,15 +3,20 @@
 namespace App\Services;
 
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
+/**
+ * Talks to Supabase Storage. The bucket is PRIVATE: files can only be
+ * uploaded/deleted with the service key (server-side), and can only be
+ * played through short-lived signed URLs.
+ */
 class SupabaseService
 {
     /**
-     * Upload a voice note to Supabase Storage.
-     *
-     * Returns ['path' => 'chats/12/uuid.m4a', 'url' => 'https://.../public/...'].
+     * Upload a voice note. Returns ['path' => 'chats/12/uuid.m4a'].
+     * Only the path is stored in the database.
      */
     public function uploadVoice(UploadedFile $file, string $folder = 'voice-notes'): array
     {
@@ -19,11 +24,7 @@ class SupabaseService
 
         $path = trim($folder, '/') . '/' . Str::uuid() . '.' . $ext;
 
-        $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . $this->serviceKey(),
-            'apikey'        => $this->serviceKey(),
-            'x-upsert'      => 'false',
-        ])
+        $response = Http::withHeaders($this->authHeaders() + ['x-upsert' => 'false'])
             ->timeout(60)
             ->withBody(
                 file_get_contents($file->getRealPath()),
@@ -37,38 +38,108 @@ class SupabaseService
             );
         }
 
-        return [
-            'path' => $path,
-            'url'  => $this->publicUrl($path),
-        ];
+        return ['path' => $path];
     }
 
     /**
-     * Delete a file from Supabase Storage using the public URL we stored
-     * in messages.attachment_path. Does nothing for URLs that don't
-     * belong to our bucket.
+     * Returns a temporary playable URL for a stored path.
+     *
+     * Signed URLs are cached until shortly before they expire, so opening a
+     * chat full of voice notes doesn't hit Supabase once per note every time.
+     * Pass $fresh = true to throw the cached link away and sign again (used
+     * when the app reports that a link didn't work).
      */
-    public function deleteByUrl(string $url): void
+    public function signedUrl(string $path, bool $fresh = false): string
     {
-        $prefix = $this->baseUrl() . '/storage/v1/object/public/' . $this->bucket() . '/';
+        $ttl = $this->ttl();
 
-        if (!str_starts_with($url, $prefix)) {
+        $cacheKey = 'supabase-signed:' . $this->bucket() . ':' . $path;
+
+        if ($fresh) {
+            Cache::forget($cacheKey);
+        }
+
+        // Cache slightly shorter than the URL lifetime so we never hand out
+        // a link that is about to die.
+        $cacheSeconds = max(60, $ttl - 600);
+
+        return Cache::remember(
+            $cacheKey,
+            $cacheSeconds,
+            function () use ($path, $ttl) {
+                $response = Http::withHeaders($this->authHeaders())
+                    ->timeout(20)
+                    ->post(
+                        $this->baseUrl() . '/storage/v1/object/sign/' . $this->bucket() . '/' . $path,
+                        ['expiresIn' => $ttl]
+                    );
+
+                if ($response->failed()) {
+                    throw new \RuntimeException(
+                        'Supabase sign failed (' . $response->status() . '): ' . $response->body()
+                    );
+                }
+
+                $signed = (string) ($response->json('signedURL') ?? $response->json('signedUrl') ?? '');
+
+                if ($signed === '') {
+                    throw new \RuntimeException('Supabase returned no signed URL.');
+                }
+
+                // Supabase returns either "/object/sign/..." or
+                // "/storage/v1/object/sign/..." depending on version.
+                if (str_starts_with($signed, '/storage/v1')) {
+                    return $this->baseUrl() . $signed;
+                }
+
+                return $this->baseUrl() . '/storage/v1' . $signed;
+            }
+        );
+    }
+
+    /**
+     * Delete a stored file by its path (a legacy full public URL also works).
+     */
+    public function delete(string $pathOrUrl): void
+    {
+        $path = $this->toPath($pathOrUrl);
+
+        if ($path === null) {
             return;
         }
 
-        $path = substr($url, strlen($prefix));
-
-        Http::withHeaders([
-            'Authorization' => 'Bearer ' . $this->serviceKey(),
-            'apikey'        => $this->serviceKey(),
-        ])
+        Http::withHeaders($this->authHeaders())
             ->timeout(30)
             ->delete($this->baseUrl() . '/storage/v1/object/' . $this->bucket() . '/' . $path);
+
+        Cache::forget('supabase-signed:' . $this->bucket() . ':' . $path);
     }
 
-    public function publicUrl(string $path): string
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    private function toPath(string $pathOrUrl): ?string
     {
-        return $this->baseUrl() . '/storage/v1/object/public/' . $this->bucket() . '/' . $path;
+        if (!str_starts_with($pathOrUrl, 'http')) {
+            return $pathOrUrl;
+        }
+
+        $prefix = $this->baseUrl() . '/storage/v1/object/public/' . $this->bucket() . '/';
+
+        if (str_starts_with($pathOrUrl, $prefix)) {
+            return substr($pathOrUrl, strlen($prefix));
+        }
+
+        return null;
+    }
+
+    private function authHeaders(): array
+    {
+        return [
+            'Authorization' => 'Bearer ' . $this->serviceKey(),
+            'apikey'        => $this->serviceKey(),
+        ];
     }
 
     private function contentTypeFor(string $ext): string
@@ -98,5 +169,10 @@ class SupabaseService
     private function bucket(): string
     {
         return (string) config('services.supabase.bucket', 'voice-notes');
+    }
+
+    private function ttl(): int
+    {
+        return (int) config('services.supabase.signed_url_ttl', 43200);
     }
 }

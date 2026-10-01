@@ -6,19 +6,30 @@ use App\Events\MessageDeleted;
 use App\Events\NewMessage;
 use App\Http\Controllers\Controller;
 use App\Models\Chat;
+use App\Models\Contact;
 use App\Models\Message;
 use App\Models\User;
 use App\Services\SupabaseService;
+use App\Services\UnreadService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
+use Kreait\Firebase\Exception\Messaging\NotFound;
 use Kreait\Firebase\Messaging\AndroidConfig;
+use Kreait\Firebase\Messaging\ApnsConfig;
 use Kreait\Firebase\Messaging\CloudMessage;
 use Kreait\Firebase\Messaging\Notification as FirebaseNotification;
 use Kreait\Laravel\Firebase\Facades\Firebase;
 
 class MessageController extends Controller
 {
+    /**
+     * true  = one notification per chat that updates in place
+     *         (a new message from the same chat replaces the previous one)
+     * false = every message gets its own notification
+     */
+    private const GROUP_BY_CHAT = true;
+
     public function __construct(
         protected SupabaseService $supabase
     ) {
@@ -498,13 +509,11 @@ class MessageController extends Controller
         Chat $chat,
         Message $message
     ): void {
+        $sender = $request->user();
+
         $recipientIds = $chat
             ->participants()
-            ->where(
-                'user_id',
-                '!=',
-                $request->user()->id
-            )
+            ->where('user_id', '!=', $sender->id)
             ->pluck('user_id');
 
         if ($recipientIds->isEmpty()) {
@@ -515,14 +524,66 @@ class MessageController extends Controller
             ->whereNotNull('fcm_token')
             ->get();
 
+        // A user with no saved device token can never be notified —
+        // leave a trace so "why no notification?" is easy to answer.
+        foreach ($recipientIds->diff($recipients->pluck('id')) as $missingId) {
+            Log::info('Push skipped: recipient has no fcm_token', [
+                'user_id' => $missingId,
+                'chat_id' => $chat->id,
+            ]);
+        }
+
+        $isGroup = ($chat->type ?? 'private') === 'group';
+
+        $preview = $this->previewFor($message);
+
         foreach ($recipients as $recipient) {
             try {
-                if ($message->type === 'text') {
-                    $body = $message->body ?? 'New message';
-                } elseif ($message->type === 'audio') {
-                    $body = 'Voice message';
-                } else {
-                    $body = ucfirst($message->type);
+                [$title, $body, $senderName] = $this->notificationText(
+                    $chat,
+                    $isGroup,
+                    $sender,
+                    $recipient,
+                    $preview
+                );
+
+                // Total unread for this person (number on the app icon).
+                // If the count can't be worked out, the notification is
+                // still sent — just without a number.
+                $unread = $this->unreadFor($recipient->id);
+
+                $data = [
+                    'type' => 'chat_message',
+                    'chat_id' => (string) $chat->id,
+                    'chat_type' => $isGroup ? 'group' : 'private',
+                    'chat_name' => $isGroup
+                        ? (string) ($chat->name ?? '')
+                        : (string) $senderName,
+                    'message_id' => (string) $message->id,
+                    'message_type' => (string) $message->type,
+                    'sender_id' => (string) $sender->id,
+                    'other_user_id' => (string) $sender->id,
+                    'sender_name' => (string) $senderName,
+                    'sender_avatar' => (string) ($sender->avatar_url ?? ''),
+                ];
+
+                if ($unread !== null) {
+                    $data['badge'] = (string) $unread;
+                }
+
+                $androidNotification = [
+                    'channel_id' => 'chat_messages',
+                    'sound' => 'default',
+                ];
+
+                if (self::GROUP_BY_CHAT) {
+                    $androidNotification['tag'] = 'chat_' . $chat->id;
+                }
+
+                if ($unread !== null && $unread > 0) {
+                    // Number shown on the app icon by launchers that
+                    // support it.
+                    $androidNotification['notification_count'] = $unread;
                 }
 
                 $cloudMessage = CloudMessage::withTarget(
@@ -530,34 +591,122 @@ class MessageController extends Controller
                     $recipient->fcm_token
                 )
                     ->withNotification(
-                        FirebaseNotification::create(
-                            $request->user()->name,
-                            $body
-                        )
+                        FirebaseNotification::create($title, $body)
                     )
-                    ->withData([
-                        'type' => 'chat_message',
-                        'chat_id' => (string) $chat->id,
-                        'message_id' => (string) $message->id,
-                        'sender_id' => (string) $request->user()->id,
-                    ])
+                    ->withData($data)
                     ->withAndroidConfig(
                         AndroidConfig::fromArray([
                             'priority' => 'high',
-                            'notification' => [
-                                'channel_id' => 'chat_messages',
-                                'sound' => 'default',
-                            ],
+                            'notification' => $androidNotification,
                         ])
                     );
 
+                if ($unread !== null) {
+                    $cloudMessage = $cloudMessage->withApnsConfig(
+                        ApnsConfig::fromArray([
+                            'payload' => [
+                                'aps' => [
+                                    'badge' => $unread,
+                                    'sound' => 'default',
+                                ],
+                            ],
+                        ])
+                    );
+                }
+
                 Firebase::messaging()->send($cloudMessage);
+
+                // Google accepted the push for delivery to the phone, so
+                // the sender can now see the two grey ticks.
+                Message::where('id', $message->id)
+                    ->whereNull('delivered_at')
+                    ->update(['delivered_at' => now()]);
+            } catch (NotFound $e) {
+                // The phone's token is dead (app uninstalled/reinstalled).
+                // Clear it; the app registers a new one next time it opens.
+                $recipient->update(['fcm_token' => null]);
+
+                Log::info('FCM token no longer valid, cleared', [
+                    'user_id' => $recipient->id,
+                ]);
             } catch (\Throwable $e) {
                 Log::warning('FCM push failed', [
                     'user_id' => $recipient->id,
+                    'error_class' => get_class($e),
                     'error' => $e->getMessage(),
                 ]);
             }
+        }
+    }
+
+    // ============================================================
+    // NOTIFICATION DISPLAY — change how notifications look HERE
+    // ============================================================
+
+    /**
+     * The short text shown for a message (the body line).
+     */
+    private function previewFor(Message $message): string
+    {
+        return match ($message->type) {
+            'text'  => $message->body ?? 'New message',
+            'audio' => 'Voice message',
+            'image' => 'Photo',
+            'video' => 'Video',
+            'file'  => 'Document',
+            default => ucfirst((string) $message->type),
+        };
+    }
+
+    /**
+     * Builds the notification title and body for one recipient.
+     *
+     * Private chat:  title = name  — body = message
+     * Group chat:    title = group — body = "name: message"
+     *
+     * "name" is what the RECIPIENT saved this person as in their
+     * contacts, falling back to the person's own profile name.
+     *
+     * @return array{0: string, 1: string, 2: string} [title, body, senderName]
+     */
+    private function notificationText(
+        Chat $chat,
+        bool $isGroup,
+        User $sender,
+        User $recipient,
+        string $preview
+    ): array {
+        $savedName = Contact::where('user_id', $recipient->id)
+            ->where('contact_user_id', $sender->id)
+            ->value('saved_name');
+
+        $senderName = $savedName ?: $sender->name;
+
+        if ($isGroup) {
+            return [
+                $chat->name ?: 'Group',
+                $senderName . ': ' . $preview,
+                $senderName,
+            ];
+        }
+
+        return [$senderName, $preview, $senderName];
+    }
+
+    /**
+     * Unread total for a user, or null if it couldn't be calculated.
+     */
+    private function unreadFor(int $userId): ?int
+    {
+        try {
+            return UnreadService::forUser($userId);
+        } catch (\Throwable $e) {
+            Log::warning('Could not count unread messages', [
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
         }
     }
 }

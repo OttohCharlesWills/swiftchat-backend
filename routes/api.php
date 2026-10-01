@@ -16,8 +16,8 @@ use Illuminate\Support\Facades\Broadcast;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 8,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+8.apk',
+        'version_code' => 9,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+9.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -64,6 +64,9 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         '/chats/{chatId}/upload-voice',
         [MessageController::class, 'uploadVoice']
     );
+
+    Route::get('/unread-count', [UnreadController::class, 'count']);
+    Route::get('/chats/{chatId}/messages/{messageId}/media', [MessageController::class, 'mediaUrl']);
 
     Route::get('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'show']);
     Route::post('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'update']);
