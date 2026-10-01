@@ -7,7 +7,6 @@ use App\Events\NewMessage;
 use App\Http\Controllers\Controller;
 use App\Models\Chat;
 use App\Models\Message;
-use App\Models\MessageDeletion;
 use App\Models\User;
 use App\Services\SupabaseService;
 use Illuminate\Http\Request;
@@ -35,11 +34,15 @@ class MessageController extends Controller
 
         $this->authorizeParticipant($request, $chat);
 
-        $userId = $request->user()->id;
+        $userId = (int) $request->user()->id;
 
         $messages = $chat->messages()
-            ->whereDoesntHave('deletions', function ($query) use ($userId) {
-                $query->where('user_id', $userId);
+            ->where(function ($query) use ($userId) {
+                $query->whereNull('deleted_for_user_ids')
+                    ->orWhereJsonDoesntContain(
+                        'deleted_for_user_ids',
+                        $userId
+                    );
             })
             ->with([
                 'sender',
@@ -66,7 +69,6 @@ class MessageController extends Controller
             'type' => 'nullable|in:text,image,video,file,audio',
             'attachment_path' => 'nullable|string',
             'reply_to_id' => 'nullable|exists:messages,id',
-            // Length of a voice note in seconds (audio messages only).
             'duration_seconds' => 'nullable|integer|min:0|max:3600',
         ]);
 
@@ -76,17 +78,42 @@ class MessageController extends Controller
             ], 422);
         }
 
-        // If replying, make sure the reply message belongs
-        // to this same chat.
+        // --------------------------------------------------------
+        // VALIDATE REPLY
+        // --------------------------------------------------------
+
         if ($request->reply_to_id) {
             $replyMessage = Message::find($request->reply_to_id);
 
-            if (!$replyMessage || $replyMessage->chat_id != $chat->id) {
+            if (
+                !$replyMessage ||
+                (int) $replyMessage->chat_id !== (int) $chat->id
+            ) {
                 return response()->json([
                     'message' => 'Invalid reply message.',
                 ], 422);
             }
+
+            // Don't allow replying to a message that the current
+            // user has deleted for themselves.
+            $deletedFor = $replyMessage->deleted_for_user_ids ?? [];
+
+            if (
+                in_array(
+                    (int) $request->user()->id,
+                    array_map('intval', $deletedFor),
+                    true
+                )
+            ) {
+                return response()->json([
+                    'message' => 'You cannot reply to this message.',
+                ], 422);
+            }
         }
+
+        // --------------------------------------------------------
+        // CREATE MESSAGE
+        // --------------------------------------------------------
 
         $type = $request->type ?? 'text';
 
@@ -100,14 +127,38 @@ class MessageController extends Controller
             'duration_seconds' => $type === 'audio'
                 ? $request->duration_seconds
                 : null,
+            'is_deleted' => false,
+            'deleted_for_user_ids' => null,
         ]);
 
+        // Load relationships before broadcasting so the Flutter app
+        // receives the sender/reply information immediately.
         $message->load([
             'sender',
             'replyTo.sender',
         ]);
 
-        broadcast(new NewMessage($message));
+        // --------------------------------------------------------
+        // PUSHER REALTIME BROADCAST
+        // --------------------------------------------------------
+        //
+        // NewMessage should implement ShouldBroadcastNow so this
+        // happens immediately without requiring a queue worker.
+        //
+
+        try {
+            broadcast(new NewMessage($message));
+        } catch (\Throwable $e) {
+            Log::warning('Pusher message broadcast failed', [
+                'message_id' => $message->id,
+                'chat_id' => $chat->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // --------------------------------------------------------
+        // FCM PUSH NOTIFICATION
+        // --------------------------------------------------------
 
         $this->sendPushToOtherParticipants(
             $request,
@@ -190,9 +241,20 @@ class MessageController extends Controller
             ->where('id', $messageId)
             ->firstOrFail();
 
-        MessageDeletion::firstOrCreate([
-            'message_id' => $message->id,
-            'user_id' => $request->user()->id,
+        $userId = (int) $request->user()->id;
+
+        $deletedFor = $message->deleted_for_user_ids ?? [];
+
+        // Make sure all IDs are integers.
+        $deletedFor = array_map('intval', $deletedFor);
+
+        // Don't add the same user twice.
+        if (!in_array($userId, $deletedFor, true)) {
+            $deletedFor[] = $userId;
+        }
+
+        $message->update([
+            'deleted_for_user_ids' => array_values($deletedFor),
         ]);
 
         return response()->json([
@@ -219,56 +281,98 @@ class MessageController extends Controller
             ->where('id', $messageId)
             ->firstOrFail();
 
-        // Only the original sender can delete for everyone.
-        if ((int) $message->sender_id !== (int) $request->user()->id) {
+        // --------------------------------------------------------
+        // ONLY ORIGINAL SENDER CAN DELETE FOR EVERYONE
+        // --------------------------------------------------------
+
+        if (
+            (int) $message->sender_id !==
+            (int) $request->user()->id
+        ) {
             return response()->json([
-                'message' => 'Only the sender can delete this message for everyone.',
+                'message' =>
+                    'Only the sender can delete this message for everyone.',
             ], 403);
         }
 
-        // 20-minute limit.
+        // --------------------------------------------------------
+        // 20-MINUTE LIMIT
+        // --------------------------------------------------------
+
         if ($message->created_at->lt(now()->subMinutes(20))) {
             return response()->json([
-                'message' => 'This message is older than 20 minutes and can only be deleted for you.',
+                'message' =>
+                    'This message is older than 20 minutes and can only be deleted for you.',
             ], 422);
         }
 
-        if (!$message->is_deleted) {
-            // Remember the voice note file so we can remove it from
-            // Supabase after the message row is cleared.
-            $voiceUrl = $message->type === 'audio'
-                ? $message->attachment_path
-                : null;
+        // --------------------------------------------------------
+        // ALREADY DELETED
+        // --------------------------------------------------------
 
-            $message->update([
-                'is_deleted' => true,
-                'deleted_at' => now(),
-                'body' => null,
-                'attachment_path' => null,
+        if ($message->is_deleted) {
+            return response()->json([
+                'message' => 'Message is already deleted for everyone.',
+                'delete_type' => 'for_everyone',
+                'message_id' => $message->id,
             ]);
+        }
 
-            if ($voiceUrl) {
-                try {
-                    $this->supabase->deleteByUrl($voiceUrl);
-                } catch (\Throwable $e) {
-                    Log::warning('Supabase voice delete failed', [
-                        'message_id' => $message->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
+        // --------------------------------------------------------
+        // REMEMBER VOICE FILE
+        // --------------------------------------------------------
+
+        $voiceUrl = $message->type === 'audio'
+            ? $message->attachment_path
+            : null;
+
+        // --------------------------------------------------------
+        // DELETE MESSAGE CONTENT
+        // --------------------------------------------------------
+        //
+        // IMPORTANT:
+        // Your messages table does NOT contain deleted_at.
+        // Therefore we only use is_deleted here.
+        //
+
+        $message->update([
+            'is_deleted' => true,
+            'body' => null,
+            'attachment_path' => null,
+        ]);
+
+        // --------------------------------------------------------
+        // DELETE VOICE FILE FROM SUPABASE
+        // --------------------------------------------------------
+
+        if ($voiceUrl) {
+            try {
+                $this->supabase->deleteByUrl($voiceUrl);
+            } catch (\Throwable $e) {
+                Log::warning('Supabase voice delete failed', [
+                    'message_id' => $message->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
 
-        $message->load([
-            'sender',
-            'replyTo.sender',
-        ]);
+        // --------------------------------------------------------
+        // BROADCAST DELETE TO OTHER USERS
+        // --------------------------------------------------------
 
-        broadcast(new MessageDeleted(
-            $message->id,
-            $chat->id,
-            true
-        ));
+        try {
+            broadcast(new MessageDeleted(
+                $message->id,
+                $chat->id,
+                true
+            ));
+        } catch (\Throwable $e) {
+            Log::warning('Message deletion broadcast failed', [
+                'message_id' => $message->id,
+                'chat_id' => $chat->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         return response()->json([
             'message' => 'Message deleted for everyone.',
@@ -306,7 +410,7 @@ class MessageController extends Controller
     }
 
     // ============================================================
-    // UPLOAD VOICE NOTE (Supabase Storage)
+    // UPLOAD VOICE NOTE
     // ============================================================
 
     public function uploadVoice(Request $request, $chatId)
@@ -321,11 +425,21 @@ class MessageController extends Controller
 
         $file = $request->file('file');
 
-        // Checked by extension: the server-side mime sniffing of .m4a
-        // files is inconsistent (audio/mp4, audio/x-m4a, video/mp4).
-        $allowed = ['m4a', 'aac', 'mp3', 'ogg', 'opus', 'wav', 'webm', 'mp4', '3gp'];
+        $allowed = [
+            'm4a',
+            'aac',
+            'mp3',
+            'ogg',
+            'opus',
+            'wav',
+            'webm',
+            'mp4',
+            '3gp',
+        ];
 
-        $ext = strtolower($file->getClientOriginalExtension());
+        $ext = strtolower(
+            $file->getClientOriginalExtension()
+        );
 
         if (!in_array($ext, $allowed, true)) {
             return response()->json([
@@ -386,7 +500,11 @@ class MessageController extends Controller
     ): void {
         $recipientIds = $chat
             ->participants()
-            ->where('user_id', '!=', $request->user()->id)
+            ->where(
+                'user_id',
+                '!=',
+                $request->user()->id
+            )
             ->pluck('user_id');
 
         if ($recipientIds->isEmpty()) {
@@ -435,13 +553,10 @@ class MessageController extends Controller
 
                 Firebase::messaging()->send($cloudMessage);
             } catch (\Throwable $e) {
-                Log::warning(
-                    'FCM push failed',
-                    [
-                        'user_id' => $recipient->id,
-                        'error' => $e->getMessage(),
-                    ]
-                );
+                Log::warning('FCM push failed', [
+                    'user_id' => $recipient->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
     }
