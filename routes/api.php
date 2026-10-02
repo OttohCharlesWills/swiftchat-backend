@@ -17,8 +17,8 @@ use Illuminate\Support\Facades\Broadcast;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 9,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+9.apk',
+        'version_code' => 10,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+10.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
