@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\DesktopSessionController;
 use App\Http\Controllers\Api\ThemeController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\ChatController;
+use App\Http\Controllers\Api\UnreadController;
 use App\Http\Controllers\Api\MessageController;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Api\UpdateController;
