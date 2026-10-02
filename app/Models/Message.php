@@ -2,6 +2,9 @@
 
 namespace App\Models;
 
+use App\Models\Update;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
@@ -20,6 +23,7 @@ class Message extends Model
         'read_at',
         'is_deleted',
         'deleted_at',
+        'update_preview',
     ];
 
     protected $casts = [
@@ -27,6 +31,7 @@ class Message extends Model
         'read_at' => 'datetime',
         'deleted_at' => 'datetime',
         'is_deleted' => 'boolean',
+        'update_preview' => 'array',
     ];
 
     public function chat()

@@ -8,12 +8,15 @@ use App\Http\Controllers\Controller;
 use App\Models\Chat;
 use App\Models\Contact;
 use App\Models\Message;
+use App\Models\Update;
 use App\Models\User;
 use App\Services\SupabaseService;
 use App\Services\UnreadService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Kreait\Firebase\Exception\Messaging\NotFound;
 use Kreait\Firebase\Messaging\AndroidConfig;
 use Kreait\Firebase\Messaging\ApnsConfig;
@@ -23,6 +26,17 @@ use Kreait\Laravel\Firebase\Facades\Firebase;
 
 class MessageController extends Controller
 {
+    /**
+     * false = the push carries a normal "notification" block (works with
+     *         every app version, including the old one).
+     * true  = data-only push: the app draws the notification itself
+     *         (profile picture + name + all messages stacked in one).
+     *
+     * Leave this FALSE until the new app version is installed on the
+     * phones, then flip it to true.
+     */
+    private const DATA_ONLY_PUSH = false;
+
     public function __construct(
         protected SupabaseService $supabase
     ) {
@@ -74,6 +88,9 @@ class MessageController extends Controller
             'attachment_path' => 'nullable|string',
             'reply_to_id' => 'nullable|exists:messages,id',
             'duration_seconds' => 'nullable|integer|min:0|max:3600',
+
+            // Set when this message is a private reply to someone's Update.
+            'update_uuid' => 'nullable|string|exists:updates,uuid',
         ]);
 
         if ($validator->fails()) {
@@ -116,6 +133,14 @@ class MessageController extends Controller
         }
 
         // --------------------------------------------------------
+        // REPLY TO AN UPDATE (private comment)
+        // --------------------------------------------------------
+
+        $updatePreview = $request->filled('update_uuid')
+            ? $this->buildUpdatePreview($request, $chat)
+            : null;
+
+        // --------------------------------------------------------
         // CREATE MESSAGE
         // --------------------------------------------------------
 
@@ -128,6 +153,7 @@ class MessageController extends Controller
             'type' => $type,
             'attachment_path' => $request->attachment_path,
             'reply_to_id' => $request->reply_to_id,
+            'update_preview' => $updatePreview,
             'duration_seconds' => $type === 'audio'
                 ? $request->duration_seconds
                 : null,
@@ -171,6 +197,94 @@ class MessageController extends Controller
         );
 
         return response()->json($message, 201);
+    }
+
+    // ============================================================
+    // UPDATE PREVIEW (for private replies to an Update)
+    // ============================================================
+
+    /**
+     * Checks that the sender may reply to this Update and returns the
+     * small snapshot stored on the message (shown as a quoted card
+     * above the reply in the chat).
+     */
+    private function buildUpdatePreview(Request $request, Chat $chat): array
+    {
+        $viewerId = (int) $request->user()->id;
+
+        $update = Update::with('user')
+            ->active()
+            ->where('uuid', $request->update_uuid)
+            ->first();
+
+        abort_if(
+            !$update,
+            404,
+            'This update is no longer available.'
+        );
+
+        abort_if(
+            (int) $update->user_id === $viewerId,
+            422,
+            'You cannot reply to your own update.'
+        );
+
+        abort_if(
+            ($chat->type ?? 'private') === 'group',
+            422,
+            'Update replies go to a private chat.'
+        );
+
+        // The chat must be with the person who posted the Update.
+        $ownerInChat = $chat
+            ->participants()
+            ->where('user_id', $update->user_id)
+            ->exists();
+
+        abort_unless(
+            $ownerInChat,
+            422,
+            'This chat is not with the owner of that update.'
+        );
+
+        // Same visibility rules as viewing the Update itself.
+        $isContact = DB::table('contacts')
+            ->where('user_id', $viewerId)
+            ->where('contact_user_id', $update->user_id)
+            ->where('is_blocked', false)
+            ->exists();
+
+        $isBlocked = DB::table('update_blocked_contacts')
+            ->where('user_id', $update->user_id)
+            ->where('blocked_user_id', $viewerId)
+            ->exists();
+
+        abort_if(
+            !$isContact || $isBlocked,
+            403,
+            'You cannot reply to this update.'
+        );
+
+        // Small picture for the quoted card. For videos, Cloudinary
+        // returns a still frame when the file extension is .jpg.
+        $thumb = null;
+
+        if ($update->cloudinary_url) {
+            $thumb = $update->type === 'video'
+                ? preg_replace('/\.[a-z0-9]+$/i', '.jpg', $update->cloudinary_url)
+                : $update->cloudinary_url;
+        }
+
+        return [
+            'update_uuid' => $update->uuid,
+            'type' => $update->type,
+            'caption' => $update->caption
+                ? Str::limit($update->caption, 120)
+                : null,
+            'thumb_url' => $thumb,
+            'owner_id' => (int) $update->user_id,
+            'owner_name' => $update->user->name ?? null,
+        ];
     }
 
     // ============================================================
@@ -344,6 +458,8 @@ class MessageController extends Controller
             'is_deleted' => true,
             'body' => null,
             'attachment_path' => null,
+            // The quoted Update card goes too.
+            'update_preview' => null,
         ]);
 
         // --------------------------------------------------------
@@ -539,6 +655,11 @@ class MessageController extends Controller
             default => ucfirst((string) $message->type),
         };
 
+        // A private reply to someone's Update says so.
+        if (!empty($message->update_preview)) {
+            $preview = 'Replied to your update: ' . $preview;
+        }
+
         foreach ($recipients as $recipient) {
             try {
                 // Show the name the RECIPIENT saved this person as
@@ -558,58 +679,103 @@ class MessageController extends Controller
                 // app icon.
                 $unread = UnreadService::forUser((int) $recipient->id);
 
-                $cloudMessage = CloudMessage::withTarget(
-                    'token',
-                    $recipient->fcm_token
-                )
-                    ->withNotification(
-                        FirebaseNotification::create($title, $body)
+                $data = [
+                    'type' => 'chat_message',
+                    'chat_id' => (string) $chat->id,
+                    'chat_type' => $isGroup ? 'group' : 'private',
+                    'chat_name' => $isGroup
+                        ? (string) ($chat->name ?? '')
+                        : (string) $senderName,
+                    'message_id' => (string) $message->id,
+                    // NOTE: "message_type" is a reserved key in FCM
+                    // data payloads and makes the send fail, so this
+                    // one is called content_type.
+                    'content_type' => (string) $message->type,
+                    'sender_id' => (string) $sender->id,
+                    'other_user_id' => (string) $sender->id,
+                    'sender_name' => (string) $senderName,
+                    'sender_avatar' => (string) ($sender->avatar_url ?? ''),
+                    'badge' => (string) $unread,
+                ];
+
+                if (self::DATA_ONLY_PUSH) {
+                    // The app builds the notification itself, so the
+                    // text travels in the data. Android gets NO
+                    // notification block.
+                    $data['body'] = $preview;
+
+                    $cloudMessage = CloudMessage::withTarget(
+                        'token',
+                        $recipient->fcm_token
                     )
-                    ->withData([
-                        'type' => 'chat_message',
-                        'chat_id' => (string) $chat->id,
-                        'chat_type' => $isGroup ? 'group' : 'private',
-                        'chat_name' => $isGroup
-                            ? (string) ($chat->name ?? '')
-                            : (string) $senderName,
-                        'message_id' => (string) $message->id,
-                        // NOTE: "message_type" is a reserved key in FCM
-                        // data payloads and makes the send fail, so this
-                        // one is called content_type.
-                        'content_type' => (string) $message->type,
-                        'sender_id' => (string) $sender->id,
-                        'other_user_id' => (string) $sender->id,
-                        'sender_name' => (string) $senderName,
-                        'sender_avatar' => (string) ($sender->avatar_url ?? ''),
-                        'badge' => (string) $unread,
-                    ])
-                    ->withAndroidConfig(
-                        AndroidConfig::fromArray([
-                            'priority' => 'high',
-                            'notification' => [
-                                'channel_id' => 'chat_messages',
-                                'sound' => 'default',
-                                // One notification per chat, updated in
-                                // place instead of piling up.
-                                'tag' => 'chat_' . $chat->id,
-                                // Number on the app icon for launchers
-                                // that support it.
-                                'notification_count' => $unread,
-                            ],
-                        ])
-                    )
-                    ->withApnsConfig(
-                        ApnsConfig::fromArray([
-                            'payload' => [
-                                'aps' => [
-                                    'badge' => $unread,
-                                    'sound' => 'default',
+                        ->withData($data)
+                        ->withAndroidConfig(
+                            AndroidConfig::fromArray([
+                                'priority' => 'high',
+                            ])
+                        )
+                        // iPhones can't build their own notification
+                        // from a data message, so they still get a
+                        // normal alert, grouped by chat.
+                        ->withApnsConfig(
+                            ApnsConfig::fromArray([
+                                'headers' => ['apns-priority' => '10'],
+                                'payload' => [
+                                    'aps' => [
+                                        'alert' => [
+                                            'title' => $title,
+                                            'body' => $body,
+                                        ],
+                                        'badge' => $unread,
+                                        'sound' => 'default',
+                                        'thread-id' => 'chat_' . $chat->id,
+                                    ],
                                 ],
-                            ],
-                        ])
-                    );
+                            ])
+                        );
+                } else {
+                    $cloudMessage = CloudMessage::withTarget(
+                        'token',
+                        $recipient->fcm_token
+                    )
+                        ->withNotification(
+                            FirebaseNotification::create($title, $body)
+                        )
+                        ->withData($data)
+                        ->withAndroidConfig(
+                            AndroidConfig::fromArray([
+                                'priority' => 'high',
+                                'notification' => [
+                                    'channel_id' => 'chat_messages',
+                                    'sound' => 'default',
+                                    // One notification per chat, updated
+                                    // in place instead of piling up.
+                                    'tag' => 'chat_' . $chat->id,
+                                    // Number on the app icon for
+                                    // launchers that support it.
+                                    'notification_count' => $unread,
+                                ],
+                            ])
+                        )
+                        ->withApnsConfig(
+                            ApnsConfig::fromArray([
+                                'payload' => [
+                                    'aps' => [
+                                        'badge' => $unread,
+                                        'sound' => 'default',
+                                    ],
+                                ],
+                            ])
+                        );
+                }
 
                 Firebase::messaging()->send($cloudMessage);
+
+                // Google accepted the push for delivery to the phone, so
+                // the sender can now see the two grey ticks.
+                Message::where('id', $message->id)
+                    ->whereNull('delivered_at')
+                    ->update(['delivered_at' => now()]);
             } catch (NotFound $e) {
                 // The phone's token is dead (app uninstalled/reinstalled).
                 // Clear it so we stop sending to it; the app registers a

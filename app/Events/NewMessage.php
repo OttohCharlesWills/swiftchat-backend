@@ -39,6 +39,7 @@ class NewMessage implements ShouldBroadcastNow
             'sender_id' => $this->message->sender_id,
             'body' => $this->message->body,
             'type' => $this->message->type,
+            'update_preview' => $this->message->update_preview,
             'attachment_path' => $this->message->attachment_path,
             'reply_to_id' => $this->message->reply_to_id,
             'is_edited' => $this->message->is_edited,

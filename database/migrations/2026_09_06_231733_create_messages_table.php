@@ -20,6 +20,7 @@ return new class extends Migration
             $table->string('attachment_path')->nullable();
 
             $table->foreignId('reply_to_id')->nullable()->constrained('messages')->nullOnDelete();
+            $table->json('update_preview')->nullable();
             $table->boolean('is_deleted')->default(false);
             $table->json('deleted_for_user_ids')->nullable();
 
