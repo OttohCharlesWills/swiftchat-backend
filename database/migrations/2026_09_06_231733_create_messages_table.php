@@ -15,9 +15,11 @@ return new class extends Migration
             $table->foreignId('sender_id')->constrained('users')->onDelete('cascade');
 
             $table->text('body')->nullable();       // stored ENCRYPTED via Laravel Crypt
-            $table->enum('type', ['text', 'image', 'video', 'file', 'audio'])->default('text');
+            $table->enum('type', ['text', 'image', 'video', 'file', 'audio', 'sticker'])->default('text');
             $table->unsignedSmallInteger('duration_seconds')->nullable();
             $table->string('attachment_path')->nullable();
+
+            $table->foreignId('sticker_id')->nullable()->constrained('stickers')->nullOnDelete();
 
             $table->foreignId('reply_to_id')->nullable()->constrained('messages')->nullOnDelete();
             $table->json('update_preview')->nullable();

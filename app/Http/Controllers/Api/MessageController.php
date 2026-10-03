@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Chat;
 use App\Models\Contact;
 use App\Models\Message;
+use App\Models\Sticker;
 use App\Models\Update;
 use App\Models\User;
 use App\Services\SupabaseService;
@@ -65,9 +66,14 @@ class MessageController extends Controller
             ->with([
                 'sender',
                 'replyTo.sender',
+                'sticker',
             ])
             ->reorder('created_at', 'desc')
             ->paginate(30);
+
+        // Voice notes are stored as a private path; hand the app a
+        // short-lived playable link instead.
+        $messages->getCollection()->each(fn ($m) => $this->presentMessage($m));
 
         return response()->json($messages);
     }
@@ -83,11 +89,14 @@ class MessageController extends Controller
         $this->authorizeParticipant($request, $chat);
 
         $validator = Validator::make($request->all(), [
-            'body' => 'required_without:attachment_path|string|nullable',
-            'type' => 'nullable|in:text,image,video,file,audio',
+            'body' => 'required_without_all:attachment_path,sticker_id|string|nullable',
+            'type' => 'nullable|in:text,image,video,file,audio,sticker',
             'attachment_path' => 'nullable|string',
             'reply_to_id' => 'nullable|exists:messages,id',
             'duration_seconds' => 'nullable|integer|min:0|max:3600',
+
+            // The sticker's uuid (what the sticker API returns as "id").
+            'sticker_id' => 'required_if:type,sticker|nullable|string|exists:stickers,uuid',
 
             // Set when this message is a private reply to someone's Update.
             'update_uuid' => 'nullable|string|exists:updates,uuid',
@@ -141,17 +150,39 @@ class MessageController extends Controller
             : null;
 
         // --------------------------------------------------------
-        // CREATE MESSAGE
+        // STICKER
         // --------------------------------------------------------
 
-        $type = $request->type ?? 'text';
+        // Sending a sticker_id always makes it a sticker message.
+        $type = $request->filled('sticker_id')
+            ? 'sticker'
+            : ($request->type ?? 'text');
+
+        $sticker = null;
+
+        if ($type === 'sticker') {
+            $sticker = Sticker::where('uuid', $request->sticker_id)
+                ->whereHas('pack', fn ($q) => $q->active())
+                ->first();
+
+            if (!$sticker) {
+                return response()->json([
+                    'message' => 'This sticker is no longer available.',
+                ], 422);
+            }
+        }
+
+        // --------------------------------------------------------
+        // CREATE MESSAGE
+        // --------------------------------------------------------
 
         $message = Message::create([
             'chat_id' => $chat->id,
             'sender_id' => $request->user()->id,
-            'body' => $request->body,
+            'body' => $type === 'sticker' ? null : $request->body,
             'type' => $type,
             'attachment_path' => $request->attachment_path,
+            'sticker_id' => $sticker?->id,
             'reply_to_id' => $request->reply_to_id,
             'update_preview' => $updatePreview,
             'duration_seconds' => $type === 'audio'
@@ -161,12 +192,29 @@ class MessageController extends Controller
             'deleted_for_user_ids' => null,
         ]);
 
+        // Keep the sender's "recent stickers" list up to date.
+        if ($sticker) {
+            try {
+                $sticker->recordUseBy((int) $request->user()->id);
+            } catch (\Throwable $e) {
+                Log::warning('Recording recent sticker failed', [
+                    'sticker_id' => $sticker->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         // Load relationships before broadcasting so the Flutter app
-        // receives the sender/reply information immediately.
+        // receives the sender/reply/sticker information immediately.
         $message->load([
             'sender',
             'replyTo.sender',
+            'sticker',
         ]);
+
+        // Voice notes: swap the stored path for a playable signed link
+        // (response/broadcast only, nothing is saved).
+        $this->presentMessage($message);
 
         // --------------------------------------------------------
         // PUSHER REALTIME BROADCAST
@@ -458,6 +506,8 @@ class MessageController extends Controller
             'is_deleted' => true,
             'body' => null,
             'attachment_path' => null,
+            // A deleted sticker message no longer points at a sticker.
+            'sticker_id' => null,
             // The quoted Update card goes too.
             'update_preview' => null,
         ]);
@@ -468,7 +518,7 @@ class MessageController extends Controller
 
         if ($voiceUrl) {
             try {
-                $this->supabase->deleteByUrl($voiceUrl);
+                $this->supabase->delete($voiceUrl);
             } catch (\Throwable $e) {
                 Log::warning('Supabase voice delete failed', [
                     'message_id' => $message->id,
@@ -585,9 +635,44 @@ class MessageController extends Controller
             ], 500);
         }
 
+        // The service returns only the private storage path. "url" keeps
+        // the same key the app already reads (it sends this value back as
+        // attachment_path when the message is created); signed_url is a
+        // temporary link if the app wants to play it straight away.
         return response()->json([
-            'url' => $uploaded['url'],
+            'url' => $uploaded['path'],
+            'path' => $uploaded['path'],
+            'signed_url' => $this->supabase->playableUrl($uploaded['path']),
         ]);
+    }
+
+    // ============================================================
+    // PRESENT MESSAGE (voice notes -> playable link)
+    // ============================================================
+
+    /**
+     * For voice notes the database holds a private storage path, which the
+     * app can't play. In the JSON sent to the app (list, send response and
+     * realtime) it is replaced by a short-lived signed URL. Nothing is
+     * written back to the database.
+     */
+    private function presentMessage(Message $message): Message
+    {
+        if (
+            $message->type === 'audio'
+            && !$message->is_deleted
+            && $message->attachment_path
+        ) {
+            $url = $this->supabase->playableUrl($message->attachment_path);
+
+            $message->setAttribute('attachment_url', $url);
+
+            if ($url) {
+                $message->setAttribute('attachment_path', $url);
+            }
+        }
+
+        return $message;
     }
 
     // ============================================================
@@ -647,12 +732,13 @@ class MessageController extends Controller
 
         // What the notification says for non-text messages.
         $preview = match ($message->type) {
-            'text'  => $message->body ?? 'New message',
-            'audio' => 'Voice message',
-            'image' => 'Photo',
-            'video' => 'Video',
-            'file'  => 'Document',
-            default => ucfirst((string) $message->type),
+            'text'    => $message->body ?? 'New message',
+            'audio'   => 'Voice message',
+            'image'   => 'Photo',
+            'video'   => 'Video',
+            'file'    => 'Document',
+            'sticker' => 'Sticker',
+            default   => ucfirst((string) $message->type),
         };
 
         // A private reply to someone's Update says so.

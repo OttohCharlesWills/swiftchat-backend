@@ -156,7 +156,7 @@ class UpdateController extends Controller
      * excludes the viewer's own posts, so without this endpoint a freshly
      * posted Update never shows up anywhere for its own author.
      */
-    public function mine(Request $request)
+        public function mine(Request $request)
     {
         $userId = $request->user()->id;
 
@@ -169,9 +169,42 @@ class UpdateController extends Controller
             ->oldest()
             ->get();
 
-        // You've implicitly "seen" your own Updates.
-        $updates->each(function ($update) {
+        // Private replies: chat messages that carry a preview of one of
+        // these Updates.
+        $uuids = $updates->pluck('uuid')->all();
+
+        $repliesByUuid = collect();
+
+        if (!empty($uuids)) {
+            $repliesByUuid = \App\Models\Message::query()
+                ->with('sender:id,name,avatar_url')
+                ->whereIn('update_preview->update_uuid', $uuids)
+                ->where('sender_id', '!=', $userId)
+                ->where('is_deleted', false)
+                ->latest()
+                ->get()
+                ->groupBy(fn ($m) => $m->update_preview['update_uuid'] ?? '');
+        }
+
+        $updates->each(function ($update) use ($repliesByUuid) {
+            // You've implicitly "seen" your own Updates.
             $update->viewed_by_me = true;
+
+            $replies = $repliesByUuid->get($update->uuid, collect());
+
+            $update->replies_count = $replies->count();
+
+            $update->private_replies = $replies->take(20)->map(fn ($m) => [
+                'message_id' => $m->id,
+                'chat_id' => $m->chat_id,
+                'body' => $m->body,
+                'created_at' => $m->created_at,
+                'sender' => [
+                    'id' => $m->sender?->id,
+                    'name' => $m->sender?->name,
+                    'avatar_url' => $m->sender?->avatar_url,
+                ],
+            ])->values();
         });
 
         return response()->json([

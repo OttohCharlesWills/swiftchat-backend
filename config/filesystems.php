@@ -70,7 +70,22 @@ return [
             'report' => false,
         ],
 
+        'supabase-stickers' => [
+            'driver' => 's3',
+            'key' => env('SUPABASE_S3_KEY'),
+            'secret' => env('SUPABASE_S3_SECRET'),
+            'region' => env('SUPABASE_S3_REGION'),
+            'bucket' => env('SUPABASE_STICKERS_BUCKET', 'stickers'),
+            'endpoint' => env('SUPABASE_S3_ENDPOINT'),
+            'url' => env('SUPABASE_STICKERS_PUBLIC_URL'),
+            'use_path_style_endpoint' => true,
+            'throw' => true,
+        ],
+
     ],
+
+
+    
 
     /*
     |--------------------------------------------------------------------------

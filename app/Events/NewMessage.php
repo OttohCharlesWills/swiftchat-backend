@@ -31,7 +31,7 @@ class NewMessage implements ShouldBroadcastNow
         return 'message.sent';
     }
 
-    public function broadcastWith(): array
+        public function broadcastWith(): array
     {
         return [
             'id' => $this->message->id,
@@ -39,9 +39,11 @@ class NewMessage implements ShouldBroadcastNow
             'sender_id' => $this->message->sender_id,
             'body' => $this->message->body,
             'type' => $this->message->type,
+            'duration_seconds' => $this->message->duration_seconds,
             'update_preview' => $this->message->update_preview,
             'attachment_path' => $this->message->attachment_path,
             'reply_to_id' => $this->message->reply_to_id,
+            'reply_to' => $this->message->replyTo,
             'is_edited' => $this->message->is_edited,
             'is_deleted' => $this->message->is_deleted,
             'delivered_at' => $this->message->delivered_at,

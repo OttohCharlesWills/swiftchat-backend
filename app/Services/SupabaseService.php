@@ -5,6 +5,7 @@ namespace App\Services;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -98,6 +99,42 @@ class SupabaseService
     }
 
     /**
+     * Safe wrapper used when building API responses: takes whatever is
+     * stored (a path, or a legacy full URL) and returns a link the app can
+     * play, or null if one can't be made. Never throws, so one bad voice
+     * note can't break loading a whole chat.
+     */
+    public function playableUrl(?string $pathOrUrl, bool $fresh = false): ?string
+    {
+        if (!$pathOrUrl) {
+            return null;
+        }
+
+        if (str_starts_with($pathOrUrl, 'http')) {
+            $path = $this->toPath($pathOrUrl);
+
+            // Not one of our Supabase public URLs (e.g. already a signed
+            // link or another host): leave it as it is.
+            if ($path === null) {
+                return $pathOrUrl;
+            }
+        } else {
+            $path = $pathOrUrl;
+        }
+
+        try {
+            return $this->signedUrl($path, $fresh);
+        } catch (\Throwable $e) {
+            Log::warning('Could not sign Supabase URL', [
+                'path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
      * Delete a stored file by its path (a legacy full public URL also works).
      */
     public function delete(string $pathOrUrl): void
@@ -113,6 +150,14 @@ class SupabaseService
             ->delete($this->baseUrl() . '/storage/v1/object/' . $this->bucket() . '/' . $path);
 
         Cache::forget('supabase-signed:' . $this->bucket() . ':' . $path);
+    }
+
+    /**
+     * Kept so older callers that still use the previous method name work.
+     */
+    public function deleteByUrl(string $pathOrUrl): void
+    {
+        $this->delete($pathOrUrl);
     }
 
     // ============================================================

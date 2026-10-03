@@ -14,9 +14,9 @@ class UpdateRepost extends Model
         'user_id',
     ];
 
-    public function update()
+    public function originalUpdate()
     {
-        return $this->belongsTo(Update::class);
+        return $this->belongsTo(Update::class, 'update_id');
     }
 
     public function user()
@@ -24,4 +24,3 @@ class UpdateRepost extends Model
         return $this->belongsTo(User::class);
     }
 }
-

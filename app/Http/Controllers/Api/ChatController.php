@@ -67,8 +67,9 @@ class ChatController extends Controller
             }
 
             // Last message shown under the chat name. Voice notes, photos,
-            // videos and documents have no text body, so give them a
-            // readable label — only in this response, nothing is saved.
+            // videos, documents and stickers have no text body, so give
+            // them a readable label — only in this response, nothing is
+            // saved.
             $latest = $latestByChat->get($chat->id);
 
             if ($latest) {
@@ -100,11 +101,12 @@ class ChatController extends Controller
         }
 
         return match ($message->type) {
-            'audio' => '🎤 Voice message',
-            'image' => '📷 Photo',
-            'video' => '🎥 Video',
-            'file'  => '📄 Document',
-            default => null,
+            'audio'   => '🎤 Voice message',
+            'image'   => '📷 Photo',
+            'video'   => '🎥 Video',
+            'file'    => '📄 Document',
+            'sticker' => '🏷️ Sticker',
+            default   => null,
         };
     }
 

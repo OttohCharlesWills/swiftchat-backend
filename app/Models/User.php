@@ -98,5 +98,20 @@ class User extends Authenticatable
     {
         return $this->hasMany(UpdateBlockedContact::class);
     }
+
+    public function stickerPacks()
+{
+    return $this->belongsToMany(\App\Models\StickerPack::class, 'user_sticker_packs')
+        ->withPivot('position')
+        ->withTimestamps()
+        ->orderBy('user_sticker_packs.position');
+}
+ 
+public function recentStickers()
+{
+    return $this->belongsToMany(\App\Models\Sticker::class, 'user_recent_stickers')
+        ->withPivot('use_count', 'last_used_at')
+        ->orderByDesc('user_recent_stickers.last_used_at');
+}
 }
 

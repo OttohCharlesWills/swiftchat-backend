@@ -13,6 +13,9 @@ use App\Http\Controllers\Api\MessageController;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Api\UpdateController;
 use Illuminate\Support\Facades\Broadcast;
+use App\Http\Controllers\Api\StickerAdminController;
+use App\Http\Controllers\Api\StickerController;
+use App\Http\Middleware\EnsureStickerAdmin;
 
 Route::get('/app-version', function () {
     return response()->json([
@@ -168,4 +171,19 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::delete('/updates/blocked-contacts/{userId}', [UpdateController::class, 'unblockContact']);
 
 
+ 
+    // Inside your existing Route::middleware('auth:sanctum')->group(...) block:
+    Route::prefix('stickers')->group(function () {
+        Route::get('/packs', [StickerController::class, 'packs']);
+        Route::get('/packs/{pack}', [StickerController::class, 'show']);
+        Route::post('/packs/{pack}/install', [StickerController::class, 'install']);
+        Route::delete('/packs/{pack}/install', [StickerController::class, 'uninstall']);
+        Route::get('/my-packs', [StickerController::class, 'myPacks']);
+        Route::get('/recent', [StickerController::class, 'recent']);
+        Route::get('/search', [StickerController::class, 'search']);
+    });
+    
+    // Outside the auth group (protected by the admin key header instead):
+    Route::post('/admin/stickers/import', [StickerAdminController::class, 'import'])
+        ->middleware(EnsureStickerAdmin::class);
 });

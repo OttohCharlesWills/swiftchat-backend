@@ -58,4 +58,9 @@ class Message extends Model
     {
         return $this->hasMany(MessageDeletion::class);
     }
+
+    public function sticker()
+{
+    return $this->belongsTo(\App\Models\Sticker::class);
+}
 }
