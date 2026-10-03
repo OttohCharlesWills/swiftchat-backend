@@ -15,7 +15,15 @@ return [
     'max_archive_files' => 500,
     'max_archive_bytes' => 50 * 1024 * 1024,
 
-    'recent_limit' => 30,
+    'recent_limit' => 100,
+
+    // How many stickers each user can keep in their own "My Stickers" pack
+    'user_sticker_limit' => 100,
+
+    // Collections (saved stickers): stickers per collection, and collections per user.
+    // Favorites have no limit.
+    'collection_sticker_limit' => 100,
+    'max_collections' => 80,
 
     // Secret for the admin import endpoint (X-Sticker-Admin-Key header)
     'admin_key' => env('STICKERS_ADMIN_KEY'),

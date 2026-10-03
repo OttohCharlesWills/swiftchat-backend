@@ -162,7 +162,7 @@ class MessageController extends Controller
 
         if ($type === 'sticker') {
             $sticker = Sticker::where('uuid', $request->sticker_id)
-                ->whereHas('pack', fn ($q) => $q->active())
+                ->usableBy((int) $request->user()->id)
                 ->first();
 
             if (!$sticker) {
@@ -737,7 +737,7 @@ class MessageController extends Controller
             'image'   => 'Photo',
             'video'   => 'Video',
             'file'    => 'Document',
-            'sticker' => 'Sticker',
+            'sticker' => 'Sent a sticker 🏷️',
             default   => ucfirst((string) $message->type),
         };
 

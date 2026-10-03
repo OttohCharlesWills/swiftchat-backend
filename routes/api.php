@@ -20,8 +20,8 @@ use App\Http\Middleware\EnsureStickerAdmin;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 11,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+11.apk',
+        'version_code' => 12,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+12.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -171,7 +171,7 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::delete('/updates/blocked-contacts/{userId}', [UpdateController::class, 'unblockContact']);
 
 
- 
+    
     // Inside your existing Route::middleware('auth:sanctum')->group(...) block:
     Route::prefix('stickers')->group(function () {
         Route::get('/packs', [StickerController::class, 'packs']);
@@ -186,4 +186,21 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     // Outside the auth group (protected by the admin key header instead):
     Route::post('/admin/stickers/import', [StickerAdminController::class, 'import'])
         ->middleware(EnsureStickerAdmin::class);
+    
+    // ---- Added for user-made stickers (inside the same auth:sanctum Route::prefix('stickers') group) ----
+    Route::post('/mine', [StickerController::class, 'storeMine'])->middleware('throttle:20,1');
+    Route::delete('/mine/{sticker}', [StickerController::class, 'destroyMine']);
+    
+    // ---- Added for favorites + collections (inside the same auth:sanctum Route::prefix('stickers') group) ----
+    // Add: use App\Http\Controllers\Api\StickerLibraryController;
+    Route::get('/favorites', [StickerLibraryController::class, 'favorites']);
+    Route::post('/favorites/{sticker}', [StickerLibraryController::class, 'addFavorite']);
+    Route::delete('/favorites/{sticker}', [StickerLibraryController::class, 'removeFavorite']);
+    Route::get('/library/{sticker}', [StickerLibraryController::class, 'library']);
+    Route::get('/collections', [StickerLibraryController::class, 'collections']);
+    Route::post('/collections', [StickerLibraryController::class, 'createCollection']);
+    Route::delete('/collections/{collection}', [StickerLibraryController::class, 'deleteCollection']);
+    Route::post('/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'addToCollection']);
+    Route::delete('/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'removeFromCollection']);
+    
 });
