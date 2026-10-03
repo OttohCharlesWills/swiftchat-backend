@@ -20,8 +20,8 @@ use App\Http\Middleware\EnsureStickerAdmin;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 10,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+10.apk',
+        'version_code' => 11,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+11.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
