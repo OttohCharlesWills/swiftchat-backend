@@ -5,17 +5,22 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\StickerPackResource;
 use App\Http\Resources\StickerResource;
+use App\Models\Message;
 use App\Models\Sticker;
 use App\Models\StickerPack;
+use App\Services\Stickers\UserStickerService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class StickerController extends Controller
 {
-    /** GET /stickers/packs?search= — the sticker store */
+    /** GET /stickers/packs?search= — the sticker store (public packs only) */
     public function packs(Request $request)
     {
-        $query = StickerPack::active()->with('cover')->where('stickers_count', '>', 0);
+        $query = StickerPack::active()
+            ->whereNull('owner_id')
+            ->with('cover')
+            ->where('stickers_count', '>', 0);
 
         if ($search = trim((string) $request->query('search', ''))) {
             $query->where('name', 'like', "%{$search}%");
@@ -34,7 +39,10 @@ class StickerController extends Controller
     /** GET /stickers/packs/{pack} */
     public function show(Request $request, StickerPack $pack)
     {
-        abort_unless($pack->is_active, 404);
+        abort_unless(
+            $pack->is_active && ($pack->owner_id === null || (int) $pack->owner_id === (int) $request->user()->id),
+            404
+        );
 
         $pack->load(['cover', 'stickers']);
         $this->markInstalled($request, collect([$pack]));
@@ -43,8 +51,11 @@ class StickerController extends Controller
     }
 
     /** GET /stickers/my-packs — what the sticker picker shows */
-    public function myPacks(Request $request)
+    public function myPacks(Request $request, UserStickerService $userStickers)
     {
+        // Makes sure the user's own "My Stickers" pack exists and is installed.
+        $userStickers->personalPack($request->user());
+
         $packs = $request->user()->stickerPacks()
             ->active()
             ->with(['cover', 'stickers'])
@@ -58,7 +69,8 @@ class StickerController extends Controller
     /** POST /stickers/packs/{pack}/install */
     public function install(Request $request, StickerPack $pack)
     {
-        abort_unless($pack->is_active, 404);
+        // Personal packs can't be installed by anyone else.
+        abort_unless($pack->is_active && $pack->owner_id === null, 404);
 
         $user = $request->user();
 
@@ -75,6 +87,9 @@ class StickerController extends Controller
     /** DELETE /stickers/packs/{pack}/install */
     public function uninstall(Request $request, StickerPack $pack)
     {
+        // "My Stickers" is always there.
+        abort_if($pack->owner_id !== null, 422, 'You cannot remove your own sticker pack.');
+
         $request->user()->stickerPacks()->detach($pack->id);
 
         return response()->json(['installed' => false]);
@@ -83,8 +98,11 @@ class StickerController extends Controller
     /** GET /stickers/recent */
     public function recent(Request $request)
     {
+        $userId = (int) $request->user()->id;
+
         $stickers = $request->user()->recentStickers()
-            ->whereHas('pack', fn ($q) => $q->active())
+            ->available()
+            ->whereHas('pack', fn ($q) => $q->active()->visibleTo($userId))
             ->limit(config('stickers.recent_limit'))
             ->get();
 
@@ -97,8 +115,11 @@ class StickerController extends Controller
         $q = trim((string) $request->query('q', ''));
         abort_if($q === '', 422, 'Search term required.');
 
+        $userId = (int) $request->user()->id;
+
         $stickers = Sticker::query()
-            ->whereHas('pack', fn ($p) => $p->active())
+            ->available()
+            ->whereHas('pack', fn ($p) => $p->active()->visibleTo($userId))
             ->where(function ($w) use ($q) {
                 $w->where('emoji', $q)->orWhereJsonContains('keywords', mb_strtolower($q));
             })
@@ -106,6 +127,55 @@ class StickerController extends Controller
             ->get();
 
         return StickerResource::collection($stickers);
+    }
+
+    // ------------------------------------------------------------
+    // MY STICKERS (user-made, private)
+    // ------------------------------------------------------------
+
+    /** POST /stickers/mine  (multipart: file, emoji?) */
+    public function storeMine(Request $request, UserStickerService $userStickers)
+    {
+        $request->validate([
+            'file' => 'required|file|mimes:jpg,jpeg,png,webp,gif|max:8192',
+            'emoji' => 'nullable|string|max:16',
+        ]);
+
+        try {
+            $sticker = $userStickers->create(
+                $request->user(),
+                $request->file('file'),
+                $request->input('emoji')
+            );
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        return (new StickerResource($sticker))->response()->setStatusCode(201);
+    }
+
+    /** DELETE /stickers/mine/{sticker} */
+    public function destroyMine(Request $request, Sticker $sticker, UserStickerService $userStickers)
+    {
+        $pack = $sticker->pack;
+
+        abort_unless(
+            $pack && (int) $pack->owner_id === (int) $request->user()->id,
+            403,
+            'This is not your sticker.'
+        );
+
+        if (Message::where('sticker_id', $sticker->id)->exists()) {
+            // Already sent in chats: hide it so old messages keep showing it.
+            $sticker->update(['is_removed' => true]);
+            DB::table('user_recent_stickers')->where('sticker_id', $sticker->id)->delete();
+        } else {
+            $sticker->delete();
+        }
+
+        $userStickers->refreshPack($pack);
+
+        return response()->json(['deleted' => true]);
     }
 
     protected function markInstalled(Request $request, $packs): void

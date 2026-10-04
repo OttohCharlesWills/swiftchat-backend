@@ -15,6 +15,8 @@ return new class extends Migration
             $table->string('slug')->unique();
             $table->string('author')->nullable();
             $table->text('description')->nullable();
+            $table->foreignId('owner_id')->nullable()->constrained('users')->cascadeOnDelete();
+            $table->unique('owner_id');
             $table->unsignedBigInteger('cover_sticker_id')->nullable();
             $table->string('source', 30)->default('manual'); // manual, folder, archive, upload
             $table->boolean('is_official')->default(false);

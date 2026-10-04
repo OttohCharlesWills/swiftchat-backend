@@ -17,6 +17,7 @@ return new class extends Migration
             $table->boolean('is_animated')->default(false);
             $table->unsignedSmallInteger('width')->nullable();
             $table->unsignedSmallInteger('height')->nullable();
+            $table->boolean('is_removed')->default(false);
             $table->unsignedInteger('file_size')->default(0);
             $table->char('checksum', 40);               // sha1 of file -> dedupe on re-import
             $table->string('emoji', 32)->nullable();
