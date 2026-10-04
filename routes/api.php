@@ -171,10 +171,12 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::post('/updates/blocked-contacts/{userId}', [UpdateController::class, 'blockContact']);
     Route::delete('/updates/blocked-contacts/{userId}', [UpdateController::class, 'unblockContact']);
 
-
+    // Admin import: protected by the X-Sticker-Admin-Key header, NOT by login
+    Route::post('/admin/stickers/import', [StickerAdminController::class, 'import'])
+        ->middleware(EnsureStickerAdmin::class);
     
-    // Inside your existing Route::middleware('auth:sanctum')->group(...) block:
     Route::prefix('stickers')->group(function () {
+        // store + packs
         Route::get('/packs', [StickerController::class, 'packs']);
         Route::get('/packs/{pack}', [StickerController::class, 'show']);
         Route::post('/packs/{pack}/install', [StickerController::class, 'install']);
@@ -182,26 +184,23 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         Route::get('/my-packs', [StickerController::class, 'myPacks']);
         Route::get('/recent', [StickerController::class, 'recent']);
         Route::get('/search', [StickerController::class, 'search']);
+
+        // my own stickers
+        Route::post('/mine', [StickerController::class, 'storeMine'])->middleware('throttle:20,1');
+        Route::delete('/mine/{sticker}', [StickerController::class, 'destroyMine']);
+
+        // favorites + collections
+        Route::get('/favorites', [StickerLibraryController::class, 'favorites']);
+        Route::post('/favorites/{sticker}', [StickerLibraryController::class, 'addFavorite']);
+        Route::delete('/favorites/{sticker}', [StickerLibraryController::class, 'removeFavorite']);
+        Route::get('/library/{sticker}', [StickerLibraryController::class, 'library']);
+        Route::get('/collections', [StickerLibraryController::class, 'collections']);
+        Route::post('/collections', [StickerLibraryController::class, 'createCollection']);
+        Route::delete('/collections/{collection}', [StickerLibraryController::class, 'deleteCollection']);
+        Route::post('/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'addToCollection']);
+        Route::delete('/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'removeFromCollection']);
     });
-    
-    // Outside the auth group (protected by the admin key header instead):
-    Route::post('/admin/stickers/import', [StickerAdminController::class, 'import'])
-        ->middleware(EnsureStickerAdmin::class);
-    
-    // ---- Added for user-made stickers (inside the same auth:sanctum Route::prefix('stickers') group) ----
-    Route::post('/stickers/mine', [StickerController::class, 'storeMine'])->middleware('throttle:20,1');
-    Route::delete('/stickers/mine/{sticker}', [StickerController::class, 'destroyMine']);
-    
-    // ---- Added for favorites + collections (inside the same auth:sanctum Route::prefix('stickers') group) ----
-    // Add: use App\Http\Controllers\Api\StickerLibraryController;
-    Route::get('/stickers/favorites', [StickerLibraryController::class, 'favorites']);
-    Route::post('/favorites/{sticker}', [StickerLibraryController::class, 'addFavorite']);
-    Route::delete('/stickers/favorites/{sticker}', [StickerLibraryController::class, 'removeFavorite']);
-    Route::get('/stickers/library/{sticker}', [StickerLibraryController::class, 'library']);
-    Route::get('/stickers/collections', [StickerLibraryController::class, 'collections']);
-    Route::post('/stickers/collections', [StickerLibraryController::class, 'createCollection']);
-    Route::delete('/stickers/collections/{collection}', [StickerLibraryController::class, 'deleteCollection']);
-    Route::post('/stickers/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'addToCollection']);
-    Route::delete('/stickers/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'removeFromCollection']);
-    
+
 });
+
+
