@@ -189,8 +189,8 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         ->middleware(EnsureStickerAdmin::class);
     
     // ---- Added for user-made stickers (inside the same auth:sanctum Route::prefix('stickers') group) ----
-    Route::post('/mine', [StickerController::class, 'storeMine'])->middleware('throttle:20,1');
-    Route::delete('/mine/{sticker}', [StickerController::class, 'destroyMine']);
+    Route::post('/stickers/mine', [StickerController::class, 'storeMine'])->middleware('throttle:20,1');
+    Route::delete('/stickers/mine/{sticker}', [StickerController::class, 'destroyMine']);
     
     // ---- Added for favorites + collections (inside the same auth:sanctum Route::prefix('stickers') group) ----
     // Add: use App\Http\Controllers\Api\StickerLibraryController;
