@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\Stickers;
 
 use App\Models\Sticker;
 use App\Models\StickerPack;
