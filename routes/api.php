@@ -193,14 +193,14 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     
     // ---- Added for favorites + collections (inside the same auth:sanctum Route::prefix('stickers') group) ----
     // Add: use App\Http\Controllers\Api\StickerLibraryController;
-    Route::get('/favorites', [StickerLibraryController::class, 'favorites']);
+    Route::get('/stickers/favorites', [StickerLibraryController::class, 'favorites']);
     Route::post('/favorites/{sticker}', [StickerLibraryController::class, 'addFavorite']);
-    Route::delete('/favorites/{sticker}', [StickerLibraryController::class, 'removeFavorite']);
-    Route::get('/library/{sticker}', [StickerLibraryController::class, 'library']);
-    Route::get('/collections', [StickerLibraryController::class, 'collections']);
-    Route::post('/collections', [StickerLibraryController::class, 'createCollection']);
-    Route::delete('/collections/{collection}', [StickerLibraryController::class, 'deleteCollection']);
-    Route::post('/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'addToCollection']);
-    Route::delete('/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'removeFromCollection']);
+    Route::delete('/stickers/favorites/{sticker}', [StickerLibraryController::class, 'removeFavorite']);
+    Route::get('/stickers/library/{sticker}', [StickerLibraryController::class, 'library']);
+    Route::get('/stickers/collections', [StickerLibraryController::class, 'collections']);
+    Route::post('/stickers/collections', [StickerLibraryController::class, 'createCollection']);
+    Route::delete('/stickers/collections/{collection}', [StickerLibraryController::class, 'deleteCollection']);
+    Route::post('/stickers/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'addToCollection']);
+    Route::delete('/stickers/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'removeFromCollection']);
     
 });
