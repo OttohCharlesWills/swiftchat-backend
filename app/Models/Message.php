@@ -24,6 +24,7 @@ class Message extends Model
         'is_deleted',
         'deleted_at',
         'update_preview',
+        'sticker_id',
     ];
 
     protected $casts = [
