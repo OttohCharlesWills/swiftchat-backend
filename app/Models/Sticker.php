@@ -11,8 +11,7 @@ class Sticker extends Model
 {
     protected $fillable = [
         'sticker_pack_id', 'file_path', 'format', 'is_animated', 'width', 'height',
-        'file_size', 'checksum', 'emoji', 'keywords', 'position', 'is_removed', 
-
+        'file_size', 'checksum', 'emoji', 'keywords', 'position', 'is_removed',
     ];
 
     protected $casts = [
@@ -43,7 +42,6 @@ class Sticker extends Model
     {
         return 'uuid';
     }
-    
 
     public function pack()
     {

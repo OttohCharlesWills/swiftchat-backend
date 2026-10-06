@@ -24,7 +24,6 @@ class Message extends Model
         'is_deleted',
         'deleted_at',
         'update_preview',
-        'sticker_id',
     ];
 
     protected $casts = [
@@ -38,11 +37,6 @@ class Message extends Model
     public function chat()
     {
         return $this->belongsTo(Chat::class);
-    }
-
-    public function sticker()
-    {
-        return $this->belongsTo(\App\Models\Sticker::class);
     }
 
     public function sender()
