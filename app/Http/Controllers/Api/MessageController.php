@@ -84,6 +84,8 @@ class MessageController extends Controller
 
     public function store(Request $request, $chatId)
     {
+        $startedAt = microtime(true);
+
         $chat = Chat::findOrFail($chatId);
 
         $this->authorizeParticipant($request, $chat);
@@ -192,18 +194,6 @@ class MessageController extends Controller
             'deleted_for_user_ids' => null,
         ]);
 
-        // Keep the sender's "recent stickers" list up to date.
-        if ($sticker) {
-            try {
-                $sticker->recordUseBy((int) $request->user()->id);
-            } catch (\Throwable $e) {
-                Log::warning('Recording recent sticker failed', [
-                    'sticker_id' => $sticker->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
         // Load relationships before broadcasting so the Flutter app
         // receives the sender/reply/sticker information immediately.
         $message->load([
@@ -235,14 +225,49 @@ class MessageController extends Controller
         }
 
         // --------------------------------------------------------
-        // FCM PUSH NOTIFICATION
+        // EVERYTHING SLOW HAPPENS AFTER THE ANSWER IS SENT
         // --------------------------------------------------------
+        //
+        // The sender's phone only needs "saved". The push notification
+        // (a call to Google, one per person, plus unread counts) used to
+        // run BEFORE the answer and made every send feel slow. It now
+        // runs right after the response has gone out.
+        //
 
-        $this->sendPushToOtherParticipants(
-            $request,
-            $chat,
-            $message
-        );
+        $senderId = (int) $request->user()->id;
+
+        app()->terminating(function () use ($request, $chat, $message, $sticker, $senderId) {
+            // Keep the sender's "recent stickers" list up to date.
+            if ($sticker) {
+                try {
+                    $sticker->recordUseBy($senderId);
+                } catch (\Throwable $e) {
+                    Log::warning('Recording recent sticker failed', [
+                        'sticker_id' => $sticker->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            try {
+                $this->sendPushToOtherParticipants($request, $chat, $message);
+            } catch (\Throwable $e) {
+                Log::warning('Push after send failed', [
+                    'message_id' => $message->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+
+        $tookMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+        if ($tookMs > 700) {
+            Log::warning('Slow message send', [
+                'ms' => $tookMs,
+                'chat_id' => $chat->id,
+                'type' => $type,
+            ]);
+        }
 
         return response()->json($message, 201);
     }

@@ -3,7 +3,6 @@
 namespace App\Models;
 
 use App\Models\Update;
-use App\Models\Sticker;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -25,7 +24,6 @@ class Message extends Model
         'is_deleted',
         'deleted_at',
         'update_preview',
-        'sticker_id',
     ];
 
     protected $casts = [
@@ -40,11 +38,6 @@ class Message extends Model
     {
         return $this->belongsTo(Chat::class);
     }
-
-    public function sticker()
-{
-    return $this->belongsTo(Sticker::class);
-}
 
     public function sender()
     {
