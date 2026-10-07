@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Broadcast;
 use App\Http\Controllers\Api\StickerAdminController;
 use App\Http\Controllers\Api\StickerController;
 use App\Http\Middleware\EnsureStickerAdmin;
+use App\Http\Controllers\Api\CallController;
 
 Route::get('/app-version', function () {
     return response()->json([
@@ -199,6 +200,18 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         Route::delete('/collections/{collection}', [StickerLibraryController::class, 'deleteCollection']);
         Route::post('/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'addToCollection']);
         Route::delete('/collections/{collection}/items/{sticker}', [StickerLibraryController::class, 'removeFromCollection']);
+    });
+
+    Route::prefix('calls')->group(function () {
+        Route::get('/', [CallController::class, 'index']);                 // history
+        Route::post('/', [CallController::class, 'start'])->middleware('throttle:20,1');
+        Route::get('/{call}', [CallController::class, 'show']);
+        Route::post('/{call}/accept', [CallController::class, 'accept']);
+        Route::post('/{call}/decline', [CallController::class, 'decline']);
+        Route::post('/{call}/cancel', [CallController::class, 'cancel']);
+        Route::post('/{call}/end', [CallController::class, 'end']);
+        Route::post('/{call}/token', [CallController::class, 'token']);
+        Route::post('/{call}/signal', [CallController::class, 'relay'])->middleware('throttle:240,1');
     });
 
 });
