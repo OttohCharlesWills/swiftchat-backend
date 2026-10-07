@@ -22,8 +22,8 @@ use App\Http\Controllers\Api\CallController;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 12,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+12.apk',
+        'version_code' => 13,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+13.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
