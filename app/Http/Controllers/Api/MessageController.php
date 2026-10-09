@@ -720,6 +720,97 @@ class MessageController extends Controller
         );
     }
 
+    public function update(
+        Request $request,
+        $chatId,
+        $messageId
+    ) {
+        $chat = Chat::findOrFail($chatId);
+ 
+        $this->authorizeParticipant($request, $chat);
+ 
+        $message = Message::where('chat_id', $chat->id)
+            ->where('id', $messageId)
+            ->firstOrFail();
+ 
+        // Only the sender can edit.
+        if ((int) $message->sender_id !== (int) $request->user()->id) {
+            return response()->json([
+                'message' => 'You can only edit your own messages.',
+            ], 403);
+        }
+ 
+        // Only plain text messages.
+        if ($message->type !== 'text') {
+            return response()->json([
+                'message' => 'Only text messages can be edited.',
+            ], 422);
+        }
+ 
+        if ($message->is_deleted) {
+            return response()->json([
+                'message' => 'This message was deleted.',
+            ], 422);
+        }
+ 
+        // Same window as the app (_editWindow in chat_screen.dart).
+        if ($message->created_at->lt(now()->subMinutes(15))) {
+            return response()->json([
+                'message' => 'You can only edit a message within 15 minutes of sending it.',
+            ], 422);
+        }
+ 
+        $validator = Validator::make($request->all(), [
+            'body' => 'required|string|max:5000',
+        ]);
+ 
+        if ($validator->fails()) {
+            return response()->json([
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+ 
+        $newBody = trim($request->body);
+ 
+        if ($newBody === '') {
+            return response()->json([
+                'message' => 'A message cannot be empty.',
+            ], 422);
+        }
+ 
+        // Nothing changed -> keep it unmarked, just answer.
+        // (store() saves plain text and the model encrypts it, so we
+        // do the same here.)
+        if ($newBody !== $message->body) {
+            $message->update([
+                'body' => $newBody,
+                'is_edited' => true,
+            ]);
+        }
+ 
+        // Same relations store() loads, so the app gets the same shape.
+        $message->load([
+            'sender',
+            'replyTo.sender',
+            'sticker',
+        ]);
+ 
+        // Realtime: the SAME event as a new message. The app already has
+        // this id, sees is_edited = true, and swaps the text.
+        // (No push notification for edits.)
+        try {
+            broadcast(new NewMessage($message));
+        } catch (\Throwable $e) {
+            Log::warning('Pusher edit broadcast failed', [
+                'message_id' => $message->id,
+                'chat_id' => $chat->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+ 
+        return response()->json($message);
+    }
+
     // ============================================================
     // PUSH NOTIFICATION
     // ============================================================

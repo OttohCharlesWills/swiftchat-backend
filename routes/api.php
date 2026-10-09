@@ -22,8 +22,8 @@ use App\Http\Controllers\Api\CallController;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 13,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+13.apk',
+        'version_code' => 14,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+14.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -73,6 +73,7 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
 
     Route::get('/unread-count', [UnreadController::class, 'count']);
     Route::get('/chats/{chatId}/messages/{messageId}/media', [MessageController::class, 'mediaUrl']);
+    Route::post('/chats/{chatId}/messages/{messageId}/edit', [MessageController::class, 'update']);
 
     Route::get('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'show']);
     Route::post('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'update']);
