@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\StickerAdminController;
 use App\Http\Controllers\Api\StickerController;
 use App\Http\Middleware\EnsureStickerAdmin;
 use App\Http\Controllers\Api\CallController;
+use App\Http\Controllers\Api\GroupController;
 
 Route::get('/app-version', function () {
     return response()->json([
@@ -214,6 +215,32 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         Route::post('/{call}/token', [CallController::class, 'token']);
         Route::post('/{call}/signal', [CallController::class, 'relay'])->middleware('throttle:240,1');
     });
+
+
+    // ---- Joining by invite link (put these first) ----
+    Route::get('/groups/join/{code}', [GroupController::class, 'previewInvite']);
+    Route::post('/groups/join/{code}', [GroupController::class, 'join']);
+    
+    // ---- Groups ----
+    Route::post('/groups', [GroupController::class, 'store']);
+    Route::get('/groups/{chatId}', [GroupController::class, 'show'])->whereNumber('chatId');
+    Route::post('/groups/{chatId}/update', [GroupController::class, 'update'])->whereNumber('chatId');
+    
+    // ---- Members ----
+    Route::post('/groups/{chatId}/members', [GroupController::class, 'addMembers'])->whereNumber('chatId');
+    Route::post('/groups/{chatId}/members/{userId}/remove', [GroupController::class, 'removeMember'])
+        ->whereNumber('chatId')->whereNumber('userId');
+    Route::post('/groups/{chatId}/leave', [GroupController::class, 'leave'])->whereNumber('chatId');
+    
+    // ---- Invite link ----
+    Route::get('/groups/{chatId}/invite', [GroupController::class, 'invite'])->whereNumber('chatId');
+    Route::post('/groups/{chatId}/invite/reset', [GroupController::class, 'resetInvite'])->whereNumber('chatId');
+    Route::post('/groups/{chatId}/invite/enabled', [GroupController::class, 'setInviteEnabled'])->whereNumber('chatId');
+    
+    // ---- My setting: "Allow others to add me to groups" ----
+    Route::get('/settings/privacy', [GroupController::class, 'privacy']);
+    Route::post('/settings/privacy', [GroupController::class, 'updatePrivacy']);
+
 
 });
 

@@ -29,6 +29,7 @@ return new class extends Migration
             $table->string('otp_code')->nullable();
             $table->timestamp('otp_expires_at')->nullable();
             $table->boolean('is_verified')->default(false);
+            $table->boolean('allow_group_adds')->default(true);
 
             // Preferences
             // $table->foreignId('theme_id')->nullable()->constrained('themes')->nullOnDelete();
