@@ -46,4 +46,8 @@ return [
         'bucket' => env('SUPABASE_BUCKET', 'voice-notes'),
     ],
 
+    'google_fonts' => [
+        'key' => env('GOOGLE_FONTS_API_KEY'),
+    ],
+
 ];

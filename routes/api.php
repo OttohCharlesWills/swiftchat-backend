@@ -19,12 +19,13 @@ use App\Http\Controllers\Api\StickerController;
 use App\Http\Middleware\EnsureStickerAdmin;
 use App\Http\Controllers\Api\CallController;
 use App\Http\Controllers\Api\GroupController;
+use App\Http\Controllers\Api\FontLibraryController;
 
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 15,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+15.apk',
+        'version_code' => 16,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+16.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -71,6 +72,10 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         '/chats/{chatId}/upload-voice',
         [MessageController::class, 'uploadVoice']
     );
+
+
+    Route::get('/fonts', [FontLibraryController::class, 'index'])
+        ->middleware('throttle:60,1');
 
     Route::get('/unread-count', [UnreadController::class, 'count']);
     Route::get('/chats/{chatId}/messages/{messageId}/media', [MessageController::class, 'mediaUrl']);
