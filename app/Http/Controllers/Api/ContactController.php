@@ -7,54 +7,197 @@ use App\Models\Contact;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
+use libphonenumber\PhoneNumberUtil;
+use libphonenumber\PhoneNumberFormat;
+use libphonenumber\NumberParseException;
 
 class ContactController extends Controller
 {
-    // Bulk sync contacts uploaded from the user's phone
+    /**
+     * Get the Google libphonenumber instance.
+     */
+    private function phoneUtil(): PhoneNumberUtil
+    {
+        return PhoneNumberUtil::getInstance();
+    }
+
+    /**
+     * Normalize a phone number into E.164 format.
+     *
+     * Examples:
+     * 08031234567       -> +2348031234567
+     * 8031234567        -> +2348031234567
+     * 2348031234567     -> +2348031234567
+     * +2348031234567    -> +2348031234567
+     * 002348031234567   -> +2348031234567
+     *
+     * Defaults to Nigeria for numbers without an international prefix.
+     */
+    private function normalizePhone(
+        string $number,
+        ?string $region = 'NG'
+    ): ?string {
+        $number = trim($number);
+
+        if ($number === '') {
+            return null;
+        }
+
+        // Remove common formatting characters but preserve a leading +.
+        $number = preg_replace('/[^\d+]/', '', $number);
+
+        // Convert international 00 prefix to +.
+        if (str_starts_with($number, '00')) {
+            $number = '+' . substr($number, 2);
+        }
+
+        // Handle Nigerian numbers written as 234XXXXXXXXXX
+        // without a leading plus.
+        if (preg_match('/^234\d{10}$/', $number)) {
+            $number = '+' . $number;
+        }
+
+        // A number with + already contains its international prefix.
+        $parseRegion = str_starts_with($number, '+')
+            ? null
+            : $this->resolveRegion($region);
+
+        try {
+            $phone = $this->phoneUtil()->parse(
+                $number,
+                $parseRegion
+            );
+
+            if (!$this->phoneUtil()->isValidNumber($phone)) {
+                return null;
+            }
+
+            return $this->phoneUtil()->format(
+                $phone,
+                PhoneNumberFormat::E164
+            );
+
+        } catch (NumberParseException $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Resolve a country region.
+     *
+     * Accepts ISO region codes such as NG, GH, US.
+     * Also supports 234 as a Nigerian calling code.
+     */
+    private function resolveRegion(?string $region): string
+    {
+        if (!$region) {
+            return 'NG';
+        }
+
+        $region = strtoupper(trim($region));
+
+        $callingCodes = [
+            '234' => 'NG',
+            '233' => 'GH',
+            '254' => 'KE',
+            '27'  => 'ZA',
+            '1'   => 'US',
+            '44'  => 'GB',
+        ];
+
+        if (isset($callingCodes[$region])) {
+            return $callingCodes[$region];
+        }
+
+        if (preg_match('/^[A-Z]{2}$/', $region)) {
+            return $region;
+        }
+
+        return 'NG';
+    }
+
+    /**
+     * Bulk sync contacts uploaded from the user's phone.
+     */
     public function sync(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'contacts'                 => 'required|array|min:1',
-            'contacts.*.saved_name'    => 'required|string|max:255',
-            'contacts.*.phone_number'  => 'required|string',
+            'contacts' => 'required|array|min:1',
+
+            'contacts.*.saved_name' => 'required|string|max:255',
+
+            'contacts.*.phone_number' => 'required|string|max:30',
+
+            // Optional ISO region, e.g. NG, GH, US, GB.
+            'contacts.*.country_region' => 'nullable|string|max:5',
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return response()->json([
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
         $authUser = $request->user();
-        $incoming = collect($request->contacts);
 
-        // Normalize all incoming phone numbers to E.164-ish format (+digits only)
-        $incoming = $incoming->map(function ($entry) {
-            $entry['phone_number'] = $this->normalizePhone($entry['phone_number']);
+        $incoming = collect($request->contacts)->map(function ($entry) {
+            $region = $entry['country_region'] ?? 'NG';
+
+            $entry['phone_number'] = $this->normalizePhone(
+                $entry['phone_number'],
+                $region
+            );
+
             return $entry;
         });
 
-        // Get all normalized phone numbers being synced
-        $phoneNumbers = $incoming->pluck('phone_number')->unique();
+        // Separate invalid numbers instead of storing incorrect numbers.
+        $validContacts = $incoming->filter(function ($entry) {
+            return $entry['phone_number'] !== null;
+        })->values();
 
-        // Find which of these numbers belong to registered Gist users
-        $registeredUsers = User::whereIn('phone_number', $phoneNumbers)
-            ->where('id', '!=', $authUser->id) // exclude self
+        $invalidCount = $incoming->count() - $validContacts->count();
+
+        if ($validContacts->isEmpty()) {
+            return response()->json([
+                'message' => 'No valid phone numbers were found.',
+                'total_synced' => 0,
+                'registered_count' => 0,
+                'invalid_count' => $invalidCount,
+            ]);
+        }
+
+        // Find registered users using normalized international numbers.
+        $phoneNumbers = $validContacts
+            ->pluck('phone_number')
+            ->unique()
+            ->values();
+
+        $registeredUsers = User::whereIn(
+            'phone_number',
+            $phoneNumbers
+        )
+            ->where('id', '!=', $authUser->id)
+            ->where('is_verified', true)
             ->get()
             ->keyBy('phone_number');
 
         $synced = [];
 
-        foreach ($incoming as $entry) {
-            $matchedUser = $registeredUsers->get($entry['phone_number']);
+        foreach ($validContacts as $entry) {
+            $phone = $entry['phone_number'];
+
+            $matchedUser = $registeredUsers->get($phone);
 
             $contact = Contact::updateOrCreate(
                 [
-                    'user_id'      => $authUser->id,
-                    'phone_number' => $entry['phone_number'],
+                    'user_id' => $authUser->id,
+                    'phone_number' => $phone,
                 ],
                 [
-                    'saved_name'      => $entry['saved_name'],
+                    'saved_name' => $entry['saved_name'],
                     'contact_user_id' => $matchedUser?->id,
-                    'is_registered'   => (bool) $matchedUser,
+                    'is_registered' => (bool) $matchedUser,
                 ]
             );
 
@@ -62,43 +205,59 @@ class ContactController extends Controller
         }
 
         return response()->json([
-            'message' => 'Contacts synced.',
-            'total_synced'    => count($synced),
-            'registered_count'=> collect($synced)->where('is_registered', true)->count(),
+            'message' => 'Contacts synced successfully.',
+            'total_synced' => count($synced),
+            'registered_count' => collect($synced)
+                ->where('is_registered', true)
+                ->count(),
+            'invalid_count' => $invalidCount,
         ]);
     }
 
-    // Look up any phone number and check if it's on SwiftChat,
-    // even if it's not in the caller's contacts.
+    /**
+     * Look up a phone number and check if it belongs to a WixChat user.
+     */
     public function lookup(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'phone_number' => 'required|string|min:6|max:20',
-            'country_code' => 'nullable|string|max:5', // e.g. "234", used for local numbers like 0801...
+            'phone_number' => 'required|string|min:6|max:30',
+            'country_code' => 'nullable|string|max:10',
+            'country_region' => 'nullable|string|max:5',
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return response()->json([
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
         $authUser = $request->user();
 
-        $candidates = $this->phoneCandidates(
+        $region = $request->country_region
+            ?? $request->country_code
+            ?? 'NG';
+
+        $normalized = $this->normalizePhone(
             $request->phone_number,
-            $request->country_code
+            $region
         );
 
-        if (empty($candidates)) {
-            return response()->json(['found' => false]);
+        if (!$normalized) {
+            return response()->json([
+                'found' => false,
+                'message' => 'Invalid phone number.',
+            ]);
         }
 
-        $user = User::whereIn('phone_number', $candidates)
+        $user = User::where('phone_number', $normalized)
             ->where('id', '!=', $authUser->id)
             ->where('is_verified', true)
             ->first();
 
         if (!$user) {
-            return response()->json(['found' => false]);
+            return response()->json([
+                'found' => false,
+            ]);
         }
 
         // If that person blocked me, behave as if they don't exist.
@@ -108,142 +267,135 @@ class ContactController extends Controller
             ->exists();
 
         if ($blockedMe) {
-            return response()->json(['found' => false]);
+            return response()->json([
+                'found' => false,
+            ]);
         }
 
-        // Do I have this person saved under my own name for them?
+        // Find the caller's saved contact record.
         $saved = Contact::where('user_id', $authUser->id)
-            ->where(function ($q) use ($user, $candidates) {
-                $q->where('contact_user_id', $user->id)
-                ->orWhereIn('phone_number', $candidates);
+            ->where(function ($query) use ($user, $normalized) {
+                $query->where('contact_user_id', $user->id)
+                    ->orWhere('phone_number', $normalized);
             })
             ->first();
 
         return response()->json([
             'found' => true,
+
             'user' => [
-                'id'           => $user->id,
+                'id' => $user->id,
                 'phone_number' => $user->phone_number,
-                'name'         => $user->name,
-                'saved_name'   => $saved?->saved_name,
+                'name' => $user->name,
+                'saved_name' => $saved?->saved_name,
                 'display_name' => $saved?->saved_name ?: $user->name,
-                'username'     => $user->username,
-                'avatar_url'   => $user->avatar_url,
-                'is_contact'   => (bool) $saved,
+                'username' => $user->username,
+                'avatar_url' => $user->avatar_url,
+                'is_contact' => (bool) $saved,
             ],
         ]);
     }
 
-    // Builds the possible stored formats for a typed number.
-    private function phoneCandidates(string $raw, ?string $countryCode = null): array
+    /**
+     * List contacts.
+     */
+    public function index(Request $request)
     {
-        $digits = preg_replace('/[^0-9]/', '', $raw);
+        $authUser = $request->user();
 
-        if ($digits === '') {
-            return [];
+        // Repair existing unlinked contacts whose phone numbers
+        // already use the normalized E.164 format.
+        $unlinked = Contact::where('user_id', $authUser->id)
+            ->whereNull('contact_user_id')
+            ->pluck('phone_number');
+
+        if ($unlinked->isNotEmpty()) {
+            $matches = User::whereIn('phone_number', $unlinked)
+                ->where('id', '!=', $authUser->id)
+                ->where('is_verified', true)
+                ->pluck('id', 'phone_number');
+
+            foreach ($matches as $phone => $userId) {
+                Contact::where('user_id', $authUser->id)
+                    ->where('phone_number', $phone)
+                    ->whereNull('contact_user_id')
+                    ->update([
+                        'contact_user_id' => $userId,
+                        'is_registered' => true,
+                    ]);
+            }
         }
 
-        $candidates = ['+' . $digits];
+        $query = Contact::with('contactUser')
+            ->where('user_id', $authUser->id);
 
-        // Local format with a leading 0 -> use the country code if the app sends it
-        if ($countryCode && str_starts_with($digits, '0')) {
-            $cc = preg_replace('/[^0-9]/', '', $countryCode);
-            $candidates[] = '+' . $cc . ltrim($digits, '0');
+        if ($request->boolean('registered_only')) {
+            $query->where('is_registered', true);
         }
 
-        // "00234..." style international prefix
-        if (str_starts_with($digits, '00')) {
-            $candidates[] = '+' . substr($digits, 2);
+        if ($request->boolean('favorites_only')) {
+            $query->where('is_favorite', true);
         }
 
-        return array_values(array_unique($candidates));
-    }
-
-    // List contacts, with optional filters
-    // List contacts, with optional filters
-public function index(Request $request)
-{
-    $authUser = $request->user();
-
-    // Self-heal: link any contacts that were saved before the person
-    // registered on SwiftChat (contact_user_id still null).
-    $unlinked = Contact::where('user_id', $authUser->id)
-        ->whereNull('contact_user_id')
-        ->pluck('phone_number');
-
-    if ($unlinked->isNotEmpty()) {
-        $matches = User::whereIn('phone_number', $unlinked)
-            ->where('id', '!=', $authUser->id)
-            ->where('is_verified', true)
-            ->pluck('id', 'phone_number');
-
-        foreach ($matches as $phone => $userId) {
-            Contact::where('user_id', $authUser->id)
-                ->where('phone_number', $phone)
-                ->whereNull('contact_user_id')
-                ->update([
-                    'contact_user_id' => $userId,
-                    'is_registered'   => true,
-                ]);
+        if (!$request->boolean('include_blocked')) {
+            $query->where('is_blocked', false);
         }
+
+        $contacts = $query
+            ->orderBy('saved_name')
+            ->get()
+            ->map(function ($contact) {
+                $data = $contact->toArray();
+
+                $data['display_name'] = $contact->saved_name
+                    ?: ($contact->contactUser?->name
+                        ?? $contact->phone_number);
+
+                $data['profile_name'] = $contact->contactUser?->name;
+
+                return $data;
+            });
+
+        return response()->json($contacts);
     }
 
-    $query = Contact::with('contactUser')
-        ->where('user_id', $authUser->id);
-
-    if ($request->boolean('registered_only')) {
-        $query->where('is_registered', true);
-    }
-
-    if ($request->boolean('favorites_only')) {
-        $query->where('is_favorite', true);
-    }
-
-    if (!$request->boolean('include_blocked')) {
-        $query->where('is_blocked', false);
-    }
-
-    $contacts = $query->orderBy('saved_name')->get()->map(function ($contact) {
-        $data = $contact->toArray();
-
-        // What YOU saved them as always wins over their own profile name.
-        $data['display_name'] = $contact->saved_name
-            ?: ($contact->contactUser?->name ?? $contact->phone_number);
-
-        // Their own profile name, in case the app wants to show both.
-        $data['profile_name'] = $contact->contactUser?->name;
-
-        return $data;
-    });
-
-    return response()->json($contacts);
-}
-
-    // Toggle favorite
+    /**
+     * Toggle favorite.
+     */
     public function toggleFavorite(Request $request, $id)
     {
-        $contact = Contact::where('user_id', $request->user()->id)->findOrFail($id);
-        $contact->update(['is_favorite' => !$contact->is_favorite]);
+        $contact = Contact::where(
+            'user_id',
+            $request->user()->id
+        )->findOrFail($id);
 
-        return response()->json(['message' => 'Favorite status updated.', 'contact' => $contact]);
+        $contact->update([
+            'is_favorite' => !$contact->is_favorite,
+        ]);
+
+        return response()->json([
+            'message' => 'Favorite status updated.',
+            'contact' => $contact,
+        ]);
     }
 
-    // Toggle block
+    /**
+     * Toggle block.
+     */
     public function toggleBlock(Request $request, $id)
     {
-        $contact = Contact::where('user_id', $request->user()->id)->findOrFail($id);
-        $contact->update(['is_blocked' => !$contact->is_blocked]);
+        $contact = Contact::where(
+            'user_id',
+            $request->user()->id
+        )->findOrFail($id);
 
-        return response()->json(['message' => 'Block status updated.', 'contact' => $contact]);
-    }
+        $contact->update([
+            'is_blocked' => !$contact->is_blocked,
+        ]);
 
-    // Normalize a phone number to a consistent format: '+' followed by digits only.
-    // NOTE: this assumes the country code is already present in the number
-    // (e.g. from the phone's contact country or Flutter-side parsing via
-    // a library like phone_numbers_parser). It does NOT convert a purely
-    // local number (e.g. "08012345678") into international format on its own.
-    private function normalizePhone(string $number): string
-    {
-        return '+' . preg_replace('/[^0-9]/', '', $number);
+        return response()->json([
+            'message' => 'Block status updated.',
+            'contact' => $contact,
+        ]);
     }
 }
