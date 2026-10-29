@@ -100,8 +100,8 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::post('/contacts/{id}/favorite', [ContactController::class, 'toggleFavorite']);
     Route::post('/contacts/{id}/block', [ContactController::class, 'toggleBlock']);
 
-    Route::get('/fonts', [FontController::class, 'index']);
-    Route::post('/fonts/select', [FontController::class, 'select']);
+    // Route::get('/fonts', [FontController::class, 'index']);
+    // Route::post('/fonts/select', [FontController::class, 'select']);
 
     Route::post('/desktop-session/generate', [DesktopSessionController::class, 'generate']);
     Route::get('/desktop-session', [DesktopSessionController::class, 'index']);
