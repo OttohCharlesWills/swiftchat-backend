@@ -31,6 +31,11 @@ Route::get('/app-version', function () {
 });
 
 
+
+    Route::get('/fonts', [FontLibraryController::class, 'index'])
+        ->middleware('throttle:60,1');
+
+
 Route::post('/register', [RegisterController::class, 'register']);
 // FIX ME: this route points at RegisterController::verifyOtp, which does
 // not exist on that controller — the method is called verifyAccount().
@@ -73,9 +78,6 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         [MessageController::class, 'uploadVoice']
     );
 
-
-    Route::get('/fonts', [FontLibraryController::class, 'index'])
-        ->middleware('throttle:60,1');
 
     Route::get('/unread-count', [UnreadController::class, 'count']);
     Route::get('/chats/{chatId}/messages/{messageId}/media', [MessageController::class, 'mediaUrl']);
