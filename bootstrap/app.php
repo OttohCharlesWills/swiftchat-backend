@@ -4,6 +4,7 @@ use App\Http\Middleware\EnsureUserIsVerified;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -16,6 +17,12 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'verified.user' => EnsureUserIsVerified::class,
+        ]);
+
+        // Keep the WebRTC handshake text exactly as the phone sent it.
+        // An SDP must end with a newline, and TrimStrings removes it.
+        $middleware->trimStrings(except: [
+            fn (Request $request) => $request->is('api/calls/*/signal'),
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

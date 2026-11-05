@@ -24,8 +24,8 @@ use App\Http\Controllers\Api\FontLibraryController;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 16,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+16.apk',
+        'version_code' => 17,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+17.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
