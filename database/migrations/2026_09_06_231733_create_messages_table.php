@@ -19,6 +19,9 @@ return new class extends Migration
             $table->unsignedSmallInteger('duration_seconds')->nullable();
             $table->string('attachment_path')->nullable();
 
+            $table->boolean('view_once')->default(false);
+            $table->timestamp('purge_after')->nullable();
+
             $table->foreignId('sticker_id')->nullable()->constrained('stickers')->nullOnDelete();
 
             $table->foreignId('reply_to_id')->nullable()->constrained('messages')->nullOnDelete();

@@ -240,9 +240,9 @@ class DesktopSessionController extends Controller
         ->get();
 
         /*
-         * Automatically clean up sessions that have passed
-         * their expiry time.
-         */
+        * Automatically clean up sessions that have passed
+        * their expiry time.
+        */
         foreach ($sessions as $session) {
             if (
                 in_array($session->status, ['pending', 'active'], true)
@@ -253,14 +253,30 @@ class DesktopSessionController extends Controller
         }
 
         /*
-         * Reload after status updates.
-         */
+        * Reload after status updates.
+        */
         $sessions->each(function ($session) {
             $session->refresh();
         });
 
+        /*
+        * token and code are hidden on the model, so toArray() drops them.
+        * Add them back only for this user's still-valid pending sessions,
+        * so the phone can show the link and code again.
+        */
+        $payload = $sessions->map(function ($session) {
+            $data = $session->toArray();
+
+            if ($session->status === 'pending' && !$session->isExpired()) {
+                $data['code'] = $session->code;
+                $data['link'] = url('/desktop?token=' . $session->token);
+            }
+
+            return $data;
+        })->values();
+
         return response()->json([
-            'sessions' => $sessions,
+            'sessions' => $payload,
         ]);
     }
 
