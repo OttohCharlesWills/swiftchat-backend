@@ -34,6 +34,10 @@ class CallController extends Controller
     {
         $user = $request->user();
 
+        // Calls left "ringing" (caller's app died, no internet...) must
+        // show up as missed instead of staying hidden.
+        Call::expireStale();
+
         $calls = Call::with(['caller', 'callee'])
             ->where(function ($w) use ($user) {
                 $w->where('caller_id', $user->id)->orWhere('callee_id', $user->id);
@@ -42,7 +46,20 @@ class CallController extends Controller
             ->latest()
             ->paginate(30);
 
-        return response()->json($calls->through(fn ($c) => $c->toApi($user)));
+        // One query for every saved contact name on this page, instead of
+        // one query per call.
+        $otherIds = $calls->getCollection()
+            ->map(fn ($c) => (int) $user->id === (int) $c->caller_id ? $c->callee_id : $c->caller_id)
+            ->filter()
+            ->unique()
+            ->values();
+
+        $savedNames = Contact::where('user_id', $user->id)
+            ->whereIn('contact_user_id', $otherIds)
+            ->pluck('saved_name', 'contact_user_id')
+            ->all();
+
+        return response()->json($calls->through(fn ($c) => $c->toApi($user, $savedNames)));
     }
 
     /** GET /calls/{call} */
@@ -246,11 +263,14 @@ class CallController extends Controller
     // ============================================================
 
     /**
-     * POST /calls/{call}/signal   { kind: offer|answer|candidate, data: {...} }
+     * POST /calls/{call}/signal   { kind: offer|answer|candidate|restart, data: {...} }
      *
      * The two phones find each other by passing small messages (offer,
      * answer, network candidates) through the server. The audio itself never
      * touches your server: it goes phone to phone (or through your TURN).
+     *
+     * "restart" is sent by the phone that did NOT make the call, to ask the
+     * caller to build a fresh connection when its audio path stalls.
      */
     public function relay(Request $request, Call $call)
     {
@@ -259,7 +279,7 @@ class CallController extends Controller
         $this->authorizeParticipant($request, $call);
 
         $data = $request->validate([
-            'kind' => 'required|in:offer,answer,candidate',
+            'kind' => 'required|in:offer,answer,candidate,restart',
             'data' => 'required|array',
         ]);
 

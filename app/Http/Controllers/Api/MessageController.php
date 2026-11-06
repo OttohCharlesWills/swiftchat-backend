@@ -68,7 +68,12 @@ class MessageController extends Controller
                 'replyTo.sender',
                 'sticker',
             ])
+            // created_at only has one-second precision, so messages sent in
+            // the same second need the id as a tie-breaker. Without it the
+            // order can change between pages and messages get skipped or
+            // shown twice.
             ->reorder('created_at', 'desc')
+            ->orderBy('id', 'desc')
             ->paginate(30);
 
         // Voice notes are stored as a private path; hand the app a
@@ -89,6 +94,18 @@ class MessageController extends Controller
         $chat = Chat::findOrFail($chatId);
 
         $this->authorizeParticipant($request, $chat);
+
+        // --------------------------------------------------------
+        // FORWARDING
+        // --------------------------------------------------------
+        //
+        // The app only sends forward_message_id. The server makes the
+        // copy itself (see storeForwarded), so no new route is needed.
+        //
+
+        if ($request->filled('forward_message_id')) {
+            return $this->storeForwarded($request, $chat);
+        }
 
         $validator = Validator::make($request->all(), [
             'body' => 'required_without_all:attachment_path,sticker_id|string|nullable',
@@ -268,6 +285,83 @@ class MessageController extends Controller
                 'type' => $type,
             ]);
         }
+
+        return response()->json($message, 201);
+    }
+
+    // ============================================================
+    // FORWARD A MESSAGE
+    // ============================================================
+
+    /**
+     * Makes a copy of an existing message in another chat. The app only
+     * sends the id of the message being forwarded; everything else is
+     * copied here, so a voice note keeps its private file and nobody can
+     * forward a message they are not allowed to see.
+     */
+    private function storeForwarded(Request $request, Chat $chat)
+    {
+        $request->validate([
+            'forward_message_id' => 'required|integer|exists:messages,id',
+        ]);
+
+        $userId = (int) $request->user()->id;
+
+        $source = Message::findOrFail($request->forward_message_id);
+
+        // You must be in the chat the message came from.
+        $inSourceChat = Chat::findOrFail($source->chat_id)
+            ->participants()
+            ->where('user_id', $userId)
+            ->exists();
+
+        abort_unless($inSourceChat, 403, 'You cannot forward this message.');
+
+        $deletedFor = array_map('intval', $source->deleted_for_user_ids ?? []);
+
+        if ($source->is_deleted || in_array($userId, $deletedFor, true)) {
+            return response()->json([
+                'message' => 'This message is no longer available.',
+            ], 422);
+        }
+
+        $message = Message::create([
+            'chat_id' => $chat->id,
+            'sender_id' => $userId,
+            'body' => $source->type === 'text' ? $source->body : null,
+            'type' => $source->type,
+            'attachment_path' => $source->attachment_path,
+            'sticker_id' => $source->sticker_id,
+            'duration_seconds' => $source->duration_seconds,
+            'is_forwarded' => true,
+            'reply_to_id' => null,
+            'update_preview' => null,
+            'is_deleted' => false,
+            'deleted_for_user_ids' => null,
+        ]);
+
+        $message->load(['sender', 'replyTo.sender', 'sticker']);
+        $this->presentMessage($message);
+
+        try {
+            broadcast(new NewMessage($message));
+        } catch (\Throwable $e) {
+            Log::warning('Pusher forward broadcast failed', [
+                'message_id' => $message->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        app()->terminating(function () use ($request, $chat, $message) {
+            try {
+                $this->sendPushToOtherParticipants($request, $chat, $message);
+            } catch (\Throwable $e) {
+                Log::warning('Push after forward failed', [
+                    'message_id' => $message->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
 
         return response()->json($message, 201);
     }
@@ -518,6 +612,19 @@ class MessageController extends Controller
             ? $message->attachment_path
             : null;
 
+        // A forwarded copy of this voice note uses the SAME file. If any
+        // other message still points at it, keep the file so the copies
+        // keep playing.
+        if (
+            $voiceUrl
+            && Message::where('attachment_path', $voiceUrl)
+                ->where('id', '!=', $message->id)
+                ->where('is_deleted', false)
+                ->exists()
+        ) {
+            $voiceUrl = null;
+        }
+
         // --------------------------------------------------------
         // DELETE MESSAGE CONTENT
         // --------------------------------------------------------
@@ -726,58 +833,58 @@ class MessageController extends Controller
         $messageId
     ) {
         $chat = Chat::findOrFail($chatId);
- 
+
         $this->authorizeParticipant($request, $chat);
- 
+
         $message = Message::where('chat_id', $chat->id)
             ->where('id', $messageId)
             ->firstOrFail();
- 
+
         // Only the sender can edit.
         if ((int) $message->sender_id !== (int) $request->user()->id) {
             return response()->json([
                 'message' => 'You can only edit your own messages.',
             ], 403);
         }
- 
+
         // Only plain text messages.
         if ($message->type !== 'text') {
             return response()->json([
                 'message' => 'Only text messages can be edited.',
             ], 422);
         }
- 
+
         if ($message->is_deleted) {
             return response()->json([
                 'message' => 'This message was deleted.',
             ], 422);
         }
- 
+
         // Same window as the app (_editWindow in chat_screen.dart).
         if ($message->created_at->lt(now()->subMinutes(15))) {
             return response()->json([
                 'message' => 'You can only edit a message within 15 minutes of sending it.',
             ], 422);
         }
- 
+
         $validator = Validator::make($request->all(), [
             'body' => 'required|string|max:5000',
         ]);
- 
+
         if ($validator->fails()) {
             return response()->json([
                 'errors' => $validator->errors(),
             ], 422);
         }
- 
+
         $newBody = trim($request->body);
- 
+
         if ($newBody === '') {
             return response()->json([
                 'message' => 'A message cannot be empty.',
             ], 422);
         }
- 
+
         // Nothing changed -> keep it unmarked, just answer.
         // (store() saves plain text and the model encrypts it, so we
         // do the same here.)
@@ -787,14 +894,14 @@ class MessageController extends Controller
                 'is_edited' => true,
             ]);
         }
- 
+
         // Same relations store() loads, so the app gets the same shape.
         $message->load([
             'sender',
             'replyTo.sender',
             'sticker',
         ]);
- 
+
         // Realtime: the SAME event as a new message. The app already has
         // this id, sees is_edited = true, and swaps the text.
         // (No push notification for edits.)
@@ -807,7 +914,7 @@ class MessageController extends Controller
                 'error' => $e->getMessage(),
             ]);
         }
- 
+
         return response()->json($message);
     }
 

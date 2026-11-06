@@ -24,8 +24,8 @@ use App\Http\Controllers\Api\FontLibraryController;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 17,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+17.apk',
+        'version_code' => 18,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+18.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -103,9 +103,13 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     // Route::get('/fonts', [FontController::class, 'index']);
     // Route::post('/fonts/select', [FontController::class, 'select']);
 
-    Route::post('/desktop-session/generate', [DesktopSessionController::class, 'generate']);
-    Route::get('/desktop-session', [DesktopSessionController::class, 'index']);
-    Route::post('/desktop-session/{id}/revoke', [DesktopSessionController::class, 'revoke']);
+    // Route::post('/desktop-session/generate', [DesktopSessionController::class, 'generate']);
+    // Route::get('/desktop-session', [DesktopSessionController::class, 'index']);
+    // Route::post('/desktop-session/{id}/revoke', [DesktopSessionController::class, 'revoke']);
+
+    Route::post('/desktop-session', [DesktopSessionController::class, 'generate']);
+    Route::get('/desktop-sessions', [DesktopSessionController::class, 'index']);
+    Route::delete('/desktop-session/{id}', [DesktopSessionController::class, 'revoke']);
 
     Route::get('/themes', [ThemeController::class, 'index']);
     Route::post('/themes', [ThemeController::class, 'store']);

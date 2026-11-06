@@ -26,6 +26,10 @@ return new class extends Migration
             $table->string('ip_address', 45)->nullable();
             $table->text('user_agent')->nullable();
 
+            // Sanctum token belonging specifically to this desktop session
+            $table->unsignedBigInteger('desktop_token_id')->nullable();
+            $table->index('desktop_token_id');
+
             $table->timestamps();
         });
     }

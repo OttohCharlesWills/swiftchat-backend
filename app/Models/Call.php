@@ -74,15 +74,25 @@ class Call extends Model
     /**
      * The call as seen by one person: "other_user" is the person on the
      * other end, shown by the name this viewer saved them as.
+     *
+     * $savedNames (optional) is a ready-made [contact_user_id => saved_name]
+     * map. The history list passes it so 30 calls cost 1 query, not 30.
+     * Without it, the name is looked up for this one call.
      */
-    public function toApi(User $viewer): array
+    public function toApi(User $viewer, ?array $savedNames = null): array
     {
         $isCaller = (int) $viewer->id === (int) $this->caller_id;
         $other = $isCaller ? $this->callee : $this->caller;
 
-        $savedName = $other
-            ? Contact::where('user_id', $viewer->id)->where('contact_user_id', $other->id)->value('saved_name')
-            : null;
+        $savedName = null;
+
+        if ($other) {
+            $savedName = $savedNames !== null
+                ? ($savedNames[$other->id] ?? null)
+                : Contact::where('user_id', $viewer->id)
+                    ->where('contact_user_id', $other->id)
+                    ->value('saved_name');
+        }
 
         return [
             'id' => $this->uuid,

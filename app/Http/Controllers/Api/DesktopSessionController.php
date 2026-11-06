@@ -17,7 +17,10 @@ class DesktopSessionController extends Controller
         '1day' => 24,
     ];
 
-    // Step 1: mobile app generates the link + code
+    /**
+     * Step 1:
+     * Mobile app generates a desktop access link + verification code.
+     */
     public function generate(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -25,14 +28,16 @@ class DesktopSessionController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return response()->json([
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
         $hours = $this->durationMap[$request->duration];
 
         $session = DesktopSession::create([
             'user_id'    => $request->user()->id,
-            'token'      => Str::random(48),
+            'token'      => Str::random(64),
             'code'       => (string) random_int(100000, 999999),
             'duration'   => $request->duration,
             'expires_at' => now()->addHours($hours),
@@ -41,77 +46,149 @@ class DesktopSessionController extends Controller
 
         return response()->json([
             'message'    => 'Desktop session generated.',
-            'link'       => "https://gist.app/desktop?token={$session->token}",
-            'code'       => $session->code, // shown ONLY here, on the mobile screen
+            'link'       => "https://wixchat.app/desktop?token={$session->token}",
+            'code'       => $session->code,
             'expires_at' => $session->expires_at,
+            'duration'   => $session->duration,
         ], 201);
     }
 
-    // Step 2: desktop page checks if the token is valid before showing the code screen
+    /**
+     * Step 2:
+     * Desktop checks whether the access link is still valid.
+     */
     public function check(Request $request, string $token)
     {
         $session = DesktopSession::where('token', $token)->first();
 
         if (!$session) {
-            return response()->json(['message' => 'Invalid link.'], 404);
+            return response()->json([
+                'message' => 'Invalid link.',
+            ], 404);
         }
 
         if ($session->status === 'revoked') {
-            return response()->json(['message' => 'This link has been revoked.'], 410);
+            return response()->json([
+                'message' => 'This link has been revoked.',
+            ], 410);
         }
 
-        if ($session->isExpired()) {
-            $session->update(['status' => 'expired']);
-            return response()->json(['message' => 'This link has expired.'], 410);
+        if ($session->status === 'expired' || $session->isExpired()) {
+            $session->expire();
+
+            return response()->json([
+                'message' => 'This link has expired.',
+            ], 410);
         }
 
         if ($session->status === 'active') {
-            return response()->json(['message' => 'This session was already used.'], 410);
+            return response()->json([
+                'message' => 'This session was already used.',
+            ], 410);
         }
 
-        return response()->json(['message' => 'Link valid. Enter the code shown on your phone.']);
+        return response()->json([
+            'message' => 'Link valid. Enter the code shown on your phone.',
+            'status'  => 'pending',
+            'expires_at' => $session->expires_at,
+        ]);
     }
 
-    // Step 3: desktop submits the code entered by the user
+    /**
+     * Step 3:
+     * Desktop submits the 6-digit code shown on the mobile device.
+     */
     public function verify(Request $request, string $token)
     {
         $validator = Validator::make($request->all(), [
-            'code' => 'required|string|size:6',
+            'code' => 'required|string|size:6|regex:/^[0-9]{6}$/',
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return response()->json([
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
         $session = DesktopSession::where('token', $token)->first();
 
         if (!$session) {
-            return response()->json(['message' => 'Invalid link.'], 404);
+            return response()->json([
+                'message' => 'Invalid link.',
+            ], 404);
         }
 
+        /*
+         * Never allow a session to remain usable after its expiry time.
+         */
         if ($session->isExpired()) {
-            $session->update(['status' => 'expired']);
-            return response()->json(['message' => 'This link has expired.'], 410);
+            $session->expire();
+
+            return response()->json([
+                'message' => 'This link has expired.',
+            ], 410);
+        }
+
+        if ($session->status === 'revoked') {
+            return response()->json([
+                'message' => 'This link has been revoked.',
+            ], 410);
+        }
+
+        if ($session->status === 'active') {
+            return response()->json([
+                'message' => 'This session has already been activated.',
+            ], 410);
         }
 
         if ($session->status !== 'pending') {
-            return response()->json(['message' => 'This session is no longer available.'], 410);
-        }
-
-        if ($session->attempts >= 5) {
-            $session->update(['status' => 'revoked']);
-            return response()->json(['message' => 'Too many failed attempts. Link revoked.'], 429);
-        }
-
-        if ($session->code !== $request->code) {
-            $session->increment('attempts');
             return response()->json([
-                'message'          => 'Incorrect code.',
-                'attempts_left'    => 5 - $session->attempts,
+                'message' => 'This session is no longer available.',
+            ], 410);
+        }
+
+        /*
+         * Maximum of 5 failed attempts.
+         */
+        if ($session->attempts >= 5) {
+            $session->revoke();
+
+            return response()->json([
+                'message' => 'Too many failed attempts. Link revoked.',
+            ], 429);
+        }
+
+        /*
+         * Wrong code.
+         */
+        if (!hash_equals((string) $session->code, (string) $request->code)) {
+            $session->increment('attempts');
+
+            $attemptsLeft = max(0, 5 - ($session->attempts + 1));
+
+            /*
+             * The fifth wrong attempt immediately kills the session.
+             */
+            if ($session->attempts >= 5) {
+                $session->revoke();
+
+                return response()->json([
+                    'message'       => 'Too many failed attempts. Link revoked.',
+                    'attempts_left' => 0,
+                ], 429);
+            }
+
+            return response()->json([
+                'message'       => 'Incorrect code.',
+                'attempts_left' => $attemptsLeft,
             ], 400);
         }
 
-        // Code matched — activate session
+        /*
+         * Code matched.
+         *
+         * The desktop session itself becomes active.
+         */
         $session->update([
             'status'      => 'active',
             'verified_at' => now(),
@@ -119,31 +196,101 @@ class DesktopSessionController extends Controller
             'user_agent'  => $request->userAgent(),
         ]);
 
-        // Issue a token scoped for desktop use, tied to the same user account
-        $authToken = $session->user->createToken('desktop_session_' . $session->id)->plainTextToken;
+        /*
+         * Create a Sanctum token that expires at EXACTLY the same
+         * time as the DesktopSession.
+         *
+         * The "desktop_session:{id}" ability lets us identify this
+         * token as belonging to this specific desktop session.
+         */
+        $accessToken = $session->user->createToken(
+            'desktop_session_' . $session->id,
+            ['desktop_session:' . $session->id],
+            $session->expires_at
+        );
+
+        /*
+         * Store the Sanctum token ID on the desktop session.
+         *
+         * This requires a desktop_token_id column in the table.
+         */
+        $session->update([
+            'desktop_token_id' => $accessToken->accessToken->id,
+        ]);
 
         return response()->json([
             'message' => 'Desktop session activated.',
-            'user'    => $session->user,
-            'token'   => $authToken,
+            'user' => $session->user,
+            'token' => $accessToken->plainTextToken,
+            'expires_at' => $session->expires_at,
         ]);
     }
 
-    // Optional: user can view/revoke active desktop sessions from mobile
+    /**
+     * Mobile:
+     * List all desktop sessions belonging to the current user.
+     */
     public function index(Request $request)
     {
-        $sessions = DesktopSession::where('user_id', $request->user()->id)
-            ->orderByDesc('created_at')
-            ->get();
+        $sessions = DesktopSession::where(
+            'user_id',
+            $request->user()->id
+        )
+        ->orderByDesc('created_at')
+        ->get();
 
-        return response()->json($sessions);
+        /*
+         * Automatically clean up sessions that have passed
+         * their expiry time.
+         */
+        foreach ($sessions as $session) {
+            if (
+                in_array($session->status, ['pending', 'active'], true)
+                && $session->isExpired()
+            ) {
+                $session->expire();
+            }
+        }
+
+        /*
+         * Reload after status updates.
+         */
+        $sessions->each(function ($session) {
+            $session->refresh();
+        });
+
+        return response()->json([
+            'sessions' => $sessions,
+        ]);
     }
 
-    public function revoke(Request $request, $id)
+    /**
+     * Mobile:
+     * Revoke a specific desktop session.
+     */
+    public function revoke(Request $request, int $id)
     {
-        $session = DesktopSession::where('user_id', $request->user()->id)->findOrFail($id);
-        $session->update(['status' => 'revoked']);
+        $session = DesktopSession::where(
+            'user_id',
+            $request->user()->id
+        )->find($id);
 
-        return response()->json(['message' => 'Session revoked.']);
+        if (!$session) {
+            return response()->json([
+                'message' => 'Desktop session not found.',
+            ], 404);
+        }
+
+        if ($session->status === 'revoked') {
+            return response()->json([
+                'message' => 'Desktop session is already revoked.',
+            ]);
+        }
+
+        $session->revoke();
+
+        return response()->json([
+            'message' => 'Desktop session revoked.',
+        ]);
     }
 }
