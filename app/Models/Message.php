@@ -17,6 +17,8 @@ class Message extends Model
         'sender_id',
         'body',
         'type',
+        'view_once' => 'boolean',
+        'purge_after' => 'datetime',
         'attachment_path',
         'reply_to_id',
         'delivered_at',
@@ -64,5 +66,15 @@ class Message extends Model
     public function sticker()
 {
     return $this->belongsTo(\App\Models\Sticker::class);
+}
+
+public function reactions()
+{
+    return $this->hasMany(MessageReaction::class);
+}
+
+public function views()
+{
+    return $this->hasMany(MessageView::class);
 }
 }

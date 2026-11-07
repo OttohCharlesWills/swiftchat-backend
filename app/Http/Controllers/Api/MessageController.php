@@ -8,12 +8,16 @@ use App\Http\Controllers\Controller;
 use App\Models\Chat;
 use App\Models\Contact;
 use App\Models\Message;
+use App\Models\MessageReaction;
+use App\Models\MessageView;
 use App\Models\Sticker;
 use App\Models\Update;
 use App\Models\User;
 use App\Services\SupabaseService;
 use App\Services\UnreadService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
@@ -67,6 +71,8 @@ class MessageController extends Controller
                 'sender',
                 'replyTo.sender',
                 'sticker',
+                'reactions.user:id,name',
+                'views',
             ])
             // created_at only has one-second precision, so messages sent in
             // the same second need the id as a tie-breaker. Without it the
@@ -119,6 +125,9 @@ class MessageController extends Controller
 
             // Set when this message is a private reply to someone's Update.
             'update_uuid' => 'nullable|string|exists:updates,uuid',
+
+            // "View once": only for photos and voice notes.
+            'view_once' => 'nullable|boolean',
         ]);
 
         if ($validator->fails()) {
@@ -192,6 +201,13 @@ class MessageController extends Controller
         }
 
         // --------------------------------------------------------
+        // VIEW ONCE (photos and voice notes only)
+        // --------------------------------------------------------
+
+        $viewOnce = in_array($type, ['image', 'audio'], true)
+            && $request->boolean('view_once');
+
+        // --------------------------------------------------------
         // CREATE MESSAGE
         // --------------------------------------------------------
 
@@ -207,6 +223,9 @@ class MessageController extends Controller
             'duration_seconds' => $type === 'audio'
                 ? $request->duration_seconds
                 : null,
+            'view_once' => $viewOnce,
+            // Nobody opened it for 14 days -> its media is deleted.
+            'purge_after' => $viewOnce ? now()->addDays(14) : null,
             'is_deleted' => false,
             'deleted_for_user_ids' => null,
         ]);
@@ -217,6 +236,8 @@ class MessageController extends Controller
             'sender',
             'replyTo.sender',
             'sticker',
+            'reactions.user:id,name',
+            'views',
         ]);
 
         // Voice notes: swap the stored path for a playable signed link
@@ -309,6 +330,13 @@ class MessageController extends Controller
 
         $source = Message::findOrFail($request->forward_message_id);
 
+        // "View once" messages can never be forwarded.
+        if ($source->view_once) {
+            return response()->json([
+                'message' => 'View once messages cannot be forwarded.',
+            ], 422);
+        }
+
         // You must be in the chat the message came from.
         $inSourceChat = Chat::findOrFail($source->chat_id)
             ->participants()
@@ -340,7 +368,7 @@ class MessageController extends Controller
             'deleted_for_user_ids' => null,
         ]);
 
-        $message->load(['sender', 'replyTo.sender', 'sticker']);
+        $message->load(['sender', 'replyTo.sender', 'sticker', 'reactions.user:id,name', 'views']);
         $this->presentMessage($message);
 
         try {
@@ -790,6 +818,18 @@ class MessageController extends Controller
      */
     private function presentMessage(Message $message): Message
     {
+        // VIEW ONCE: the photo / voice note is never put in the message JSON
+        // (list, send answer or realtime). The receiver only gets a link at
+        // the moment they open it (see openViewOnce). Never save() this
+        // instance afterwards - the path is blanked in memory only.
+        if ($message->view_once && !$message->is_deleted) {
+            $message->setAttribute('has_media', !empty($message->attachment_path));
+            $message->setAttribute('attachment_path', null);
+            $message->setAttribute('attachment_url', null);
+
+            return $message;
+        }
+
         if (
             $message->type === 'audio'
             && !$message->is_deleted
@@ -805,6 +845,289 @@ class MessageController extends Controller
         }
 
         return $message;
+    }
+
+    // ============================================================
+    // EMOJI REACTION
+    // ============================================================
+
+    /**
+     * Sets, changes or removes the current user's emoji reaction.
+     *
+     * POST /chats/{chatId}/messages/{messageId}/reaction   { "emoji": "❤️" }
+     *
+     * An empty or missing emoji removes the reaction. Everyone in the chat
+     * sees the change live (same realtime event as an edited message).
+     */
+    public function react(Request $request, $chatId, $messageId)
+    {
+        $chat = Chat::findOrFail($chatId);
+
+        $this->authorizeParticipant($request, $chat);
+
+        $request->validate([
+            'emoji' => 'nullable|string|max:32',
+        ]);
+
+        $message = Message::where('chat_id', $chat->id)
+            ->where('id', $messageId)
+            ->firstOrFail();
+
+        $userId = (int) $request->user()->id;
+
+        $deletedFor = array_map('intval', $message->deleted_for_user_ids ?? []);
+
+        if ($message->is_deleted || in_array($userId, $deletedFor, true)) {
+            return response()->json([
+                'message' => 'This message is no longer available.',
+            ], 422);
+        }
+
+        $emoji = trim((string) $request->input('emoji', ''));
+
+        if ($emoji === '') {
+            MessageReaction::where('message_id', $message->id)
+                ->where('user_id', $userId)
+                ->delete();
+        } else {
+            if (mb_strlen($emoji) > 16) {
+                return response()->json([
+                    'message' => 'That is not a valid reaction.',
+                ], 422);
+            }
+
+            MessageReaction::updateOrCreate(
+                ['message_id' => $message->id, 'user_id' => $userId],
+                ['emoji' => $emoji]
+            );
+        }
+
+        $message->load([
+            'sender',
+            'replyTo.sender',
+            'sticker',
+            'reactions.user:id,name',
+            'views',
+        ]);
+
+        $this->presentMessage($message);
+
+        try {
+            broadcast(new NewMessage($message));
+        } catch (\Throwable $e) {
+            Log::warning('Pusher reaction broadcast failed', [
+                'message_id' => $message->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return response()->json([
+            'message_id' => $message->id,
+            'reactions' => $message->reactions,
+        ]);
+    }
+
+    // ============================================================
+    // VIEW ONCE: OPEN
+    // ============================================================
+
+    /**
+     * The receiver taps a "view once" photo / voice note.
+     *
+     * POST /chats/{chatId}/messages/{messageId}/view-once
+     *
+     * The view is recorded FIRST (unique per person per message), so a
+     * second tap, a second phone or a retry always gets "already opened".
+     * Only the first request receives the link to the media. Once every
+     * receiver has opened it, the media is deleted from storage a couple of
+     * minutes later (the delay lets the phone finish loading it).
+     */
+    public function openViewOnce(Request $request, $chatId, $messageId)
+    {
+        $chat = Chat::findOrFail($chatId);
+
+        $this->authorizeParticipant($request, $chat);
+
+        // Opportunistic clean-up of media that is due for deletion.
+        $this->purgeDueViewOnce();
+
+        $userId = (int) $request->user()->id;
+
+        $message = Message::where('chat_id', $chat->id)
+            ->where('id', $messageId)
+            ->firstOrFail();
+
+        if (!$message->view_once || $message->is_deleted) {
+            return response()->json([
+                'message' => 'This is not a view once message.',
+            ], 404);
+        }
+
+        $deletedFor = array_map('intval', $message->deleted_for_user_ids ?? []);
+
+        if (in_array($userId, $deletedFor, true)) {
+            return response()->json([
+                'message' => 'This message is no longer available.',
+            ], 404);
+        }
+
+        // The sender can never open their own view once message.
+        if ((int) $message->sender_id === $userId) {
+            return response()->json([
+                'message' => 'You cannot open your own view once message.',
+            ], 403);
+        }
+
+        $path = $message->attachment_path;
+
+        $expired = empty($path)
+            || (
+                $message->purge_after
+                && Carbon::parse($message->purge_after)->isPast()
+            );
+
+        if ($expired) {
+            return response()->json([
+                'message' => 'This message has expired.',
+            ], 410);
+        }
+
+        // Make the link BEFORE recording the view, so a failure here does
+        // not use up the person's one view.
+        $url = $message->type === 'audio'
+            ? $this->supabase->playableUrl($path)
+            : $path;
+
+        if (empty($url)) {
+            return response()->json([
+                'message' => 'Could not prepare this message. Try again.',
+            ], 500);
+        }
+
+        // Record the view. The unique key (message_id, user_id) is what makes
+        // "once" real, even if two requests arrive at the same moment.
+        try {
+            MessageView::create([
+                'message_id' => $message->id,
+                'user_id' => $userId,
+                'viewed_at' => now(),
+            ]);
+        } catch (QueryException $e) {
+            if (str_starts_with((string) $e->getCode(), '23')) {
+                return response()->json([
+                    'message' => 'You already opened this message.',
+                ], 410);
+            }
+
+            throw $e;
+        }
+
+        // Everybody who can open it has opened it -> delete the media soon.
+        $receivers = $chat->participants()
+            ->where('user_id', '!=', $message->sender_id)
+            ->count();
+
+        $opened = MessageView::where('message_id', $message->id)->count();
+
+        if ($opened >= $receivers) {
+            $message->update(['purge_after' => now()->addMinutes(2)]);
+        }
+
+        $duration = $message->duration_seconds;
+        $type = $message->type;
+
+        // Tell everyone (the sender sees "Opened").
+        $message->load([
+            'sender',
+            'replyTo.sender',
+            'sticker',
+            'reactions.user:id,name',
+            'views',
+        ]);
+
+        $this->presentMessage($message);
+
+        try {
+            broadcast(new NewMessage($message));
+        } catch (\Throwable $e) {
+            Log::warning('Pusher view-once broadcast failed', [
+                'message_id' => $message->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return response()
+            ->json([
+                'url' => $url,
+                'type' => $type,
+                'duration_seconds' => $duration,
+            ])
+            ->header('Cache-Control', 'no-store');
+    }
+
+    /**
+     * Deletes the media of view once messages that are due (everyone opened
+     * them, or 14 days passed). Called from openViewOnce, and you can also
+     * call it from a scheduled command if you have cron.
+     */
+    private function purgeDueViewOnce(int $limit = 20): void
+    {
+        try {
+            Message::where('view_once', true)
+                ->whereNotNull('purge_after')
+                ->where('purge_after', '<=', now())
+                ->whereNotNull('attachment_path')
+                ->limit($limit)
+                ->get()
+                ->each(fn (Message $m) => $this->purgeViewOnceMedia($m));
+        } catch (\Throwable $e) {
+            Log::warning('View once purge failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function purgeViewOnceMedia(Message $message): void
+    {
+        $path = $message->attachment_path;
+
+        if (!$path) {
+            return;
+        }
+
+        try {
+            if ($message->type === 'audio') {
+                $this->supabase->delete($path);
+            } else {
+                $publicId = $this->cloudinaryPublicId($path);
+
+                if ($publicId) {
+                    cloudinary()->uploadApi()->destroy($publicId);
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('View once media delete failed', [
+                'message_id' => $message->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        $message->update(['attachment_path' => null]);
+    }
+
+    /**
+     * https://res.cloudinary.com/<cloud>/image/upload/v123/chats/abc.jpg
+     * -> chats/abc
+     *
+     * (The stored url is the plain secure_url, without transformations.)
+     */
+    private function cloudinaryPublicId(string $url): ?string
+    {
+        if (!preg_match('#/upload/(?:v\d+/)?(.+?)\.[A-Za-z0-9]+$#', $url, $m)) {
+            return null;
+        }
+
+        return $m[1];
     }
 
     // ============================================================
@@ -900,6 +1223,8 @@ class MessageController extends Controller
             'sender',
             'replyTo.sender',
             'sticker',
+            'reactions.user:id,name',
+            'views',
         ]);
 
         // Realtime: the SAME event as a new message. The app already has
@@ -963,6 +1288,13 @@ class MessageController extends Controller
             'sticker' => 'Sent a sticker 🏷️',
             default   => ucfirst((string) $message->type),
         };
+
+        // View once never shows what is inside.
+        if ($message->view_once) {
+            $preview = $message->type === 'audio'
+                ? 'View once voice message'
+                : 'View once photo';
+        }
 
         // A private reply to someone's Update says so.
         if (!empty($message->update_preview)) {
