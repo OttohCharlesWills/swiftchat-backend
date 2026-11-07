@@ -24,8 +24,8 @@ use App\Http\Controllers\Api\FontLibraryController;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 19,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+19.apk',
+        'version_code' => 20,
+        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+20.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -84,6 +84,7 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::post('/chats/{chatId}/messages/{messageId}/edit', [MessageController::class, 'update']);
     Route::post('/chats/{chatId}/messages/{messageId}/reaction', [MessageController::class, 'react']);
     Route::post('/chats/{chatId}/messages/{messageId}/view-once', [MessageController::class, 'openViewOnce']);
+    Route::get('/chats/{chatId}/search', [MessageController::class, 'search']);
 
     Route::get('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'show']);
     Route::post('/profile', [\App\Http\Controllers\Api\ProfileController::class, 'update']);
