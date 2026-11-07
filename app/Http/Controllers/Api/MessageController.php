@@ -59,7 +59,11 @@ class MessageController extends Controller
 
         $userId = (int) $request->user()->id;
 
-        $messages = $chat->messages()
+        // How many messages to send (the app asks for 30, or up to 100 when
+        // it jumps to an old message found by search).
+        $perPage = min(max((int) $request->query('per_page', 30), 1), 100);
+
+        $query = $chat->messages()
             ->where(function ($query) use ($userId) {
                 $query->whereNull('deleted_for_user_ids')
                     ->orWhereJsonDoesntContain(
@@ -73,20 +77,140 @@ class MessageController extends Controller
                 'sticker',
                 'reactions.user:id,name',
                 'views',
-            ])
-            // created_at only has one-second precision, so messages sent in
-            // the same second need the id as a tie-breaker. Without it the
-            // order can change between pages and messages get skipped or
-            // shown twice.
-            ->reorder('created_at', 'desc')
-            ->orderBy('id', 'desc')
-            ->paginate(30);
+            ]);
+
+        // NEWER than a message: used after jumping to an old message, to load
+        // the messages that come after it. Answer is newest first, like the
+        // normal list.
+        if ($request->filled('after_id')) {
+            $newer = (clone $query)
+                ->where('id', '>', (int) $request->query('after_id'))
+                ->reorder('id', 'asc')
+                ->limit($perPage)
+                ->get()
+                ->reverse()
+                ->values();
+
+            $newer->each(fn ($m) => $this->presentMessage($m));
+
+            return response()->json(['data' => $newer]);
+        }
+
+        // OLDER than a message: the next page when scrolling up (the app
+        // sends the id of the oldest message it already has).
+        if ($request->filled('before_id')) {
+            $query->where('id', '<', (int) $request->query('before_id'));
+        }
+
+        // Ordered by id (ids only ever grow), so every page continues exactly
+        // where the last one stopped - nothing is skipped or shown twice.
+        $messages = $query
+            ->reorder('id', 'desc')
+            ->paginate($perPage);
 
         // Voice notes are stored as a private path; hand the app a
         // short-lived playable link instead.
         $messages->getCollection()->each(fn ($m) => $this->presentMessage($m));
 
         return response()->json($messages);
+    }
+
+    // ============================================================
+    // SEARCH IN A CHAT
+    // ============================================================
+
+    /**
+     * Finds text messages that contain a word, from the newest message back
+     * to the very first one.
+     *
+     * GET /chats/{chatId}/search?q=word&before_id=123
+     *
+     * Message text is stored encrypted, so the database cannot search it.
+     * The messages are read in batches, decrypted here, and compared. To keep
+     * one request fast it stops after 30 matches or about 4000 messages and
+     * returns next_before_id, which the app sends back to continue.
+     */
+    public function search(Request $request, $chatId)
+    {
+        $chat = Chat::findOrFail($chatId);
+
+        $this->authorizeParticipant($request, $chat);
+
+        $request->validate([
+            'q' => 'required|string|min:2|max:100',
+            'before_id' => 'nullable|integer|min:1',
+        ]);
+
+        $needle = trim((string) $request->query('q'));
+
+        $userId = (int) $request->user()->id;
+
+        $cursor = $request->filled('before_id')
+            ? (int) $request->query('before_id')
+            : null;
+
+        $limit = 30;
+        $maxScan = 4000;
+        $batch = 300;
+
+        $scanned = 0;
+        $matches = [];
+        $exhausted = false;
+
+        while (count($matches) < $limit && $scanned < $maxScan) {
+            $rows = Message::where('chat_id', $chat->id)
+                ->where('type', 'text')
+                ->where('is_deleted', false)
+                ->when($cursor, fn ($q) => $q->where('id', '<', $cursor))
+                ->where(function ($q) use ($userId) {
+                    $q->whereNull('deleted_for_user_ids')
+                        ->orWhereJsonDoesntContain('deleted_for_user_ids', $userId);
+                })
+                ->with('sender:id,name')
+                ->orderBy('id', 'desc')
+                ->limit($batch)
+                ->get();
+
+            if ($rows->isEmpty()) {
+                $exhausted = true;
+                break;
+            }
+
+            foreach ($rows as $row) {
+                $scanned++;
+                $cursor = (int) $row->id;
+
+                // The model decrypts the text when it is read.
+                $body = (string) $row->body;
+
+                if ($body !== '' && mb_stripos($body, $needle) !== false) {
+                    $matches[] = [
+                        'id' => (int) $row->id,
+                        'body' => $body,
+                        'sender_id' => (int) $row->sender_id,
+                        'sender_name' => $row->sender->name ?? null,
+                        'created_at' => $row->created_at?->toISOString(),
+                    ];
+
+                    if (count($matches) >= $limit) {
+                        break;
+                    }
+                }
+            }
+
+            if ($rows->count() < $batch && count($matches) < $limit) {
+                $exhausted = true;
+                break;
+            }
+        }
+
+        return response()->json([
+            'results' => $matches,
+            // true = there may be more (older) matches: ask again with
+            // before_id = next_before_id.
+            'has_more' => !$exhausted,
+            'next_before_id' => $cursor,
+        ]);
     }
 
     // ============================================================
@@ -229,6 +353,25 @@ class MessageController extends Controller
             'is_deleted' => false,
             'deleted_for_user_ids' => null,
         ]);
+
+        // SAFETY: the sender asked for "view once". If that could not be
+        // saved (usually 'view_once' / 'purge_after' are missing from $fillable
+        // in the Message model, or the migration was not run), the photo or
+        // voice note would go out as a NORMAL message. Never allow that: undo
+        // it and report the problem.
+        if ($viewOnce && !$message->view_once) {
+            Log::error(
+                'View once was NOT saved. Add view_once and purge_after to '
+                . '$fillable in the Message model, and run the migration.',
+                ['message_id' => $message->id]
+            );
+
+            $message->delete();
+
+            return response()->json([
+                'message' => 'View once is not set up on the server.',
+            ], 500);
+        }
 
         // Load relationships before broadcasting so the Flutter app
         // receives the sender/reply/sticker information immediately.
