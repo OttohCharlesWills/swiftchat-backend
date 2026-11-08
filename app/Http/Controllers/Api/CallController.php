@@ -6,6 +6,7 @@ use App\Events\CallSignal;
 use App\Http\Controllers\Controller;
 use App\Models\Call;
 use App\Models\Contact;
+use App\Models\GroupCall;
 use App\Models\User;
 use App\Services\IceService;
 use App\Services\LiveKitService;
@@ -90,6 +91,7 @@ class CallController extends Controller
         abort_if($calleeId === (int) $caller->id, 422, "You can't call yourself.");
 
         Call::expireStale();
+        GroupCall::expireStale();
 
         // The other person blocked you.
         $blocked = DB::table('contacts')
@@ -100,11 +102,15 @@ class CallController extends Controller
 
         abort_if($blocked, 403, 'You cannot call this person.');
 
-        if (Call::activeFor((int) $caller->id)->exists()) {
+        // You can't start a call while you're on another call, including a
+        // group call.
+        if ($this->isInAnyCall((int) $caller->id)) {
             return response()->json(['message' => 'You are already in a call.'], 409);
         }
 
-        $busy = Call::activeFor($calleeId)->exists();
+        // Same for the person you're calling: if they're in a 1-to-1 call
+        // OR a group call, they are busy.
+        $busy = $this->isInAnyCall($calleeId);
 
         $call = Call::create([
             'caller_id' => $caller->id,
@@ -309,6 +315,16 @@ class CallController extends Controller
     // ============================================================
     // HELPERS
     // ============================================================
+
+    /**
+     * True if this person is ringing / talking in a 1-to-1 call, or is
+     * joined in a group call. Either way they're "busy".
+     */
+    protected function isInAnyCall(int $userId): bool
+    {
+        return Call::activeFor($userId)->exists()
+            || GroupCall::activeForUser($userId)->exists();
+    }
 
     /**
      * Changes the status only if the call is still in one of the $from

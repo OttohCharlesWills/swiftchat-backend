@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\StickerAdminController;
 use App\Http\Controllers\Api\StickerController;
 use App\Http\Middleware\EnsureStickerAdmin;
 use App\Http\Controllers\Api\CallController;
+use App\Http\Controllers\Api\GroupCallController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\FontLibraryController;
 
@@ -255,6 +256,17 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::get('/settings/privacy', [GroupController::class, 'privacy']);
     Route::post('/settings/privacy', [GroupController::class, 'updatePrivacy']);
 
+
+
+// GROUP CALLSS
+
+Route::get('/chats/{chatId}/group-call', [GroupCallController::class, 'activeForChat']);
+Route::post('/group-calls', [GroupCallController::class, 'start']);
+Route::get('/group-calls/{call}', [GroupCallController::class, 'show']);
+Route::post('/group-calls/{call}/join', [GroupCallController::class, 'join']);
+Route::post('/group-calls/{call}/decline', [GroupCallController::class, 'decline']);
+Route::post('/group-calls/{call}/leave', [GroupCallController::class, 'leave']);
+Route::post('/group-calls/{call}/signal', [GroupCallController::class, 'signal']);
 
 });
 
