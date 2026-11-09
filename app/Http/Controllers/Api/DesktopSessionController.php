@@ -46,7 +46,7 @@ class DesktopSessionController extends Controller
 
         return response()->json([
             'message'    => 'Desktop session generated.',
-            'link'       => "https://wixchat.app/desktop?token={$session->token}",
+            'link'       => "https://coremonitor.in/desktop?token={$session->token}",
             'code'       => $session->code,
             'expires_at' => $session->expires_at,
             'duration'   => $session->duration,
