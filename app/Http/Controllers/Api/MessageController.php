@@ -347,12 +347,20 @@ class MessageController extends Controller
             'duration_seconds' => $type === 'audio'
                 ? $request->duration_seconds
                 : null,
-            'view_once' => $viewOnce,
-            // Nobody opened it for 14 days -> its media is deleted.
-            'purge_after' => $viewOnce ? now()->addDays(14) : null,
             'is_deleted' => false,
             'deleted_for_user_ids' => null,
         ]);
+
+        // VIEW ONCE is set with forceFill, so it is saved even if
+        // 'view_once' / 'purge_after' were not added to $fillable in the
+        // Message model (Laravel would silently ignore them in create()).
+        // Nobody opened it for 14 days -> its media is deleted.
+        if ($viewOnce) {
+            $message->forceFill([
+                'view_once' => true,
+                'purge_after' => now()->addDays(14),
+            ])->save();
+        }
 
         // SAFETY: the sender asked for "view once". If that could not be
         // saved (usually 'view_once' / 'purge_after' are missing from $fillable
@@ -504,12 +512,28 @@ class MessageController extends Controller
             'attachment_path' => $source->attachment_path,
             'sticker_id' => $source->sticker_id,
             'duration_seconds' => $source->duration_seconds,
-            'is_forwarded' => true,
             'reply_to_id' => null,
             'update_preview' => null,
             'is_deleted' => false,
             'deleted_for_user_ids' => null,
         ]);
+
+        // Mark it as forwarded with a plain UPDATE, so it is saved even if
+        // 'is_forwarded' is not in $fillable. If the column does not exist yet
+        // (migration not run) the forward still goes out, just without the
+        // "Forwarded" label - and the reason is written to the log.
+        try {
+            Message::whereKey($message->id)->update(['is_forwarded' => true]);
+
+            // Pick up the saved value so it is part of the answer.
+            $message->refresh();
+        } catch (\Throwable $e) {
+            Log::warning(
+                'Could not save is_forwarded. Add the column: '
+                . 'ALTER TABLE messages ADD COLUMN is_forwarded TINYINT(1) NOT NULL DEFAULT 0',
+                ['message_id' => $message->id, 'error' => $e->getMessage()]
+            );
+        }
 
         $message->load(['sender', 'replyTo.sender', 'sticker', 'reactions.user:id,name', 'views']);
         $this->presentMessage($message);
@@ -1026,6 +1050,12 @@ class MessageController extends Controller
             ], 422);
         }
 
+        // What this person had reacted with before (to notify only when the
+        // reaction really changed).
+        $previousEmoji = MessageReaction::where('message_id', $message->id)
+            ->where('user_id', $userId)
+            ->value('emoji');
+
         $emoji = trim((string) $request->input('emoji', ''));
 
         if ($emoji === '') {
@@ -1062,6 +1092,21 @@ class MessageController extends Controller
                 'message_id' => $message->id,
                 'error' => $e->getMessage(),
             ]);
+        }
+
+        // Tell the author "X reacted to your message" (not when the reaction
+        // was removed or is the same as before). Sent after the answer.
+        if ($emoji !== '' && $emoji !== $previousEmoji) {
+            app()->terminating(function () use ($request, $chat, $message, $emoji) {
+                try {
+                    $this->sendReactionPush($request, $chat, $message, $emoji);
+                } catch (\Throwable $e) {
+                    Log::warning('Push after reaction failed', [
+                        'message_id' => $message->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            });
         }
 
         return response()->json([
@@ -1173,7 +1218,7 @@ class MessageController extends Controller
         $opened = MessageView::where('message_id', $message->id)->count();
 
         if ($opened >= $receivers) {
-            $message->update(['purge_after' => now()->addMinutes(2)]);
+            $message->forceFill(['purge_after' => now()->addMinutes(2)])->save();
         }
 
         $duration = $message->duration_seconds;
@@ -1384,6 +1429,149 @@ class MessageController extends Controller
         }
 
         return response()->json($message);
+    }
+
+    // ============================================================
+    // PUSH NOTIFICATION: SOMEONE REACTED TO YOUR MESSAGE
+    // ============================================================
+
+    /**
+     * Tells the AUTHOR of a message that someone reacted to it
+     * ("marolizzy: Reacted ❤️ to "hello""). Nobody else is notified, and
+     * nobody is told about their own reaction.
+     */
+    private function sendReactionPush(
+        Request $request,
+        Chat $chat,
+        Message $message,
+        string $emoji
+    ): void {
+        $reactor = $request->user();
+
+        // Never notify yourself.
+        if ((int) $message->sender_id === (int) $reactor->id) {
+            return;
+        }
+
+        $author = User::find($message->sender_id);
+
+        if (!$author || empty($author->fcm_token)) {
+            return;
+        }
+
+        $isGroup = ($chat->type ?? 'private') === 'group';
+
+        // What the reaction is about. "View once" never shows what is inside.
+        if ($message->view_once) {
+            $about = $message->type === 'audio'
+                ? 'your voice message'
+                : 'your photo';
+        } else {
+            $about = match ($message->type) {
+                'text'    => $message->body
+                    ? '"' . Str::limit((string) $message->body, 40) . '"'
+                    : 'your message',
+                'image'   => 'your photo',
+                'audio'   => 'your voice message',
+                'video'   => 'your video',
+                'file'    => 'your document',
+                'sticker' => 'your sticker',
+                default   => 'your message',
+            };
+        }
+
+        // The name the AUTHOR saved the reactor as.
+        $savedName = Contact::where('user_id', $author->id)
+            ->where('contact_user_id', $reactor->id)
+            ->value('saved_name');
+
+        $reactorName = $savedName ?: $reactor->name;
+
+        $title = $isGroup ? ($chat->name ?: 'Group') : $reactorName;
+
+        $body = $isGroup
+            ? $reactorName . ' reacted ' . $emoji . ' to ' . $about
+            : 'Reacted ' . $emoji . ' to ' . $about;
+
+        // A reaction does not add an unread message, but the badge number
+        // is sent along like in every other push.
+        $unread = UnreadService::forUser((int) $author->id);
+
+        $data = [
+            'type' => 'chat_message',
+            'chat_id' => (string) $chat->id,
+            'chat_type' => $isGroup ? 'group' : 'private',
+            'chat_name' => $isGroup
+                ? (string) ($chat->name ?? '')
+                : (string) $reactorName,
+            'message_id' => (string) $message->id,
+            // Tells the app this is a reaction, not a new message.
+            'content_type' => 'reaction',
+            'reaction' => $emoji,
+            'sender_id' => (string) $reactor->id,
+            'other_user_id' => (string) $reactor->id,
+            'sender_name' => (string) $reactorName,
+            'sender_avatar' => (string) ($reactor->avatar_url ?? ''),
+            'badge' => (string) $unread,
+        ];
+
+        try {
+            if (self::DATA_ONLY_PUSH) {
+                $data['body'] = $body;
+
+                $cloudMessage = CloudMessage::withTarget('token', $author->fcm_token)
+                    ->withData($data)
+                    ->withAndroidConfig(AndroidConfig::fromArray([
+                        'priority' => 'high',
+                    ]))
+                    ->withApnsConfig(ApnsConfig::fromArray([
+                        'headers' => ['apns-priority' => '10'],
+                        'payload' => [
+                            'aps' => [
+                                'alert' => ['title' => $title, 'body' => $body],
+                                'badge' => $unread,
+                                'sound' => 'default',
+                                'thread-id' => 'chat_' . $chat->id,
+                            ],
+                        ],
+                    ]));
+            } else {
+                $cloudMessage = CloudMessage::withTarget('token', $author->fcm_token)
+                    ->withNotification(FirebaseNotification::create($title, $body))
+                    ->withData($data)
+                    ->withAndroidConfig(AndroidConfig::fromArray([
+                        'priority' => 'high',
+                        'notification' => [
+                            'channel_id' => 'chat_messages',
+                            'sound' => 'default',
+                            // A different tag from the messages of the chat,
+                            // so a reaction never replaces the last message
+                            // notification.
+                            'tag' => 'react_' . $message->id,
+                            'notification_count' => $unread,
+                        ],
+                    ]))
+                    ->withApnsConfig(ApnsConfig::fromArray([
+                        'payload' => [
+                            'aps' => [
+                                'badge' => $unread,
+                                'sound' => 'default',
+                            ],
+                        ],
+                    ]));
+            }
+
+            Firebase::messaging()->send($cloudMessage);
+        } catch (NotFound $e) {
+            // Dead token (app uninstalled): clear it, like for messages.
+            $author->update(['fcm_token' => null]);
+        } catch (\Throwable $e) {
+            Log::warning('Reaction push failed', [
+                'user_id' => $author->id,
+                'error_class' => get_class($e),
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     // ============================================================
