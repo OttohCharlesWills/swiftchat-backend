@@ -122,6 +122,7 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::get('/chats', [ChatController::class, 'index']);
     Route::post('/chats/private', [ChatController::class, 'startPrivate']);
     Route::post('/chats/group', [ChatController::class, 'startGroup']);
+    RRoute::post('/chats/{chatId}/delete-conversation', [ChatController::class, 'deleteConversation']);
 
     // Existing message routes
     Route::get(
@@ -255,6 +256,14 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     // ---- My setting: "Allow others to add me to groups" ----
     Route::get('/settings/privacy', [GroupController::class, 'privacy']);
     Route::post('/settings/privacy', [GroupController::class, 'updatePrivacy']);
+
+    // Group avatar
+    Route::post('/groups/{chatId}/avatar', [GroupController::class,'updateAvatar']);
+    // Admin management
+    Route::post('/groups/{chatId}/members/{userId}/promote', [GroupController::class,'promoteAdmin']);
+    Route::post('/groups/{chatId}/members/{userId}/demote', [GroupController::class,'demoteAdmin']);
+    // Transfer ownership
+    Route::post('/groups/{chatId}/transfer-ownership', [GroupController::class,'transferOwnership']);
 
 
 

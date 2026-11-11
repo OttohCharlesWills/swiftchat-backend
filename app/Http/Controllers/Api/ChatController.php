@@ -205,4 +205,30 @@ class ChatController extends Controller
 
         return response()->json($chat->load('users'), 201);
     }
+
+    public function deleteConversation(Request $request, $chatId)
+{
+    $user = $request->user();
+    $chat = Chat::findOrFail($chatId);
+
+    // must be a member
+    abort_unless($chat->users()->where('users.id', $user->id)->exists(), 403);
+
+    // groups can't be wiped for everyone from here
+    if ($chat->type === 'group') {
+        return response()->json(['message' => 'Groups cannot be deleted this way.'], 422);
+    }
+
+    DB::transaction(function () use ($chat) {
+        // 1. delete uploaded files (photos, documents, voice notes) from storage
+        //    -> use your Supabase/disk delete here for each attachment_path
+        // 2. delete message extras (reactions, view-once records) if they don't cascade
+        // 3. delete the messages for good (forceDelete() if Message uses SoftDeletes)
+        $chat->messages()->delete();
+        $chat->users()->detach();
+        $chat->delete();
+    });
+
+    return response()->json(['message' => 'Conversation deleted.']);
+}
 }

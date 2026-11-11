@@ -1,3 +1,4 @@
+
 <?php
 
 namespace App\Http\Controllers\Api;
@@ -12,34 +13,24 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 
 class GroupController extends Controller
 {
-    /**
-     * true  = any member can add people and share the link
-     * false = only the group's admin (creator) can add people
-     */
     private const MEMBERS_CAN_ADD = true;
+    private const MAX_MEMBERS = 1500;
 
     // ============================================================
     // CREATE GROUP
     // ============================================================
-    //
-    // POST /groups
-    // { name, description?, user_ids?: [..] }
-    //
-    // The creator is added automatically. Every other person goes through
-    // the SAME rule as "add members": if their allow_group_adds setting is
-    // OFF, they are not added — they only get the invite link in a chat.
-    //
 
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:100',
             'description' => 'nullable|string|max:500',
-            'user_ids' => 'nullable|array|max:255',
+            'user_ids' => 'nullable|array|max:' . self::MAX_MEMBERS,
             'user_ids.*' => 'integer',
         ]);
 
@@ -50,16 +41,17 @@ class GroupController extends Controller
         $creator = $request->user();
 
         [$chat, $group] = DB::transaction(function () use ($request, $creator) {
-            // ASSUMPTION: chats has `type` and `name` columns (your code
-            // already reads $chat->type and $chat->name).
+
             $chat = Chat::forceCreate([
                 'type' => 'group',
                 'name' => trim($request->name),
             ]);
 
-            // ASSUMPTION: participants() rows have a user_id column
-            // (MessageController already uses participants()->where('user_id')).
-            $chat->participants()->forceCreate(['user_id' => $creator->id]);
+            // Creator is automatically an admin.
+            $chat->participants()->forceCreate([
+                'user_id' => $creator->id,
+                'role' => 'admin',
+            ]);
 
             $group = Group::create([
                 'chat_id' => $chat->id,
@@ -77,17 +69,18 @@ class GroupController extends Controller
             (array) $request->input('user_ids', [])
         );
 
-        return response()->json(array_merge(
-            ['group' => $this->present($chat, $group, (int) $creator->id)],
-            $result
-        ), 201);
+        return response()->json(array_merge([
+            'group' => $this->present(
+                $chat->fresh(),
+                $group->fresh(),
+                (int) $creator->id
+            )
+        ], $result), 201);
     }
 
     // ============================================================
     // GROUP INFO
     // ============================================================
-    //
-    // GET /groups/{chatId}
 
     public function show(Request $request, $chatId)
     {
@@ -99,17 +92,15 @@ class GroupController extends Controller
     }
 
     // ============================================================
-    // EDIT NAME / DESCRIPTION (admin only)
+    // UPDATE GROUP NAME / DESCRIPTION
     // ============================================================
-    //
-    // POST /groups/{chatId}/update   { name?, description? }
 
     public function update(Request $request, $chatId)
     {
         [$chat, $group] = $this->loadGroup($request, $chatId);
 
         if (!$this->isAdmin($group, $request)) {
-            return $this->fail('Only the group admin can do that.', 403);
+            return $this->fail('Only group admins can update group information.', 403);
         }
 
         $validator = Validator::make($request->all(), [
@@ -122,11 +113,15 @@ class GroupController extends Controller
         }
 
         if ($request->has('name')) {
-            $chat->forceFill(['name' => trim($request->name)])->save();
+            $chat->forceFill([
+                'name' => trim($request->name)
+            ])->save();
         }
 
         if ($request->has('description')) {
-            $group->update(['description' => $request->description]);
+            $group->update([
+                'description' => $request->description
+            ]);
         }
 
         return response()->json(
@@ -135,28 +130,81 @@ class GroupController extends Controller
     }
 
     // ============================================================
-    // ADD PEOPLE
+    // GROUP AVATAR
     // ============================================================
     //
-    // POST /groups/{chatId}/members   { user_ids: [..] }
+    // POST /groups/{chatId}/avatar
+    // multipart/form-data:
+    // avatar = image
     //
-    // Answer tells the app exactly what happened to each person:
-    //   added            -> now in the group
-    //   invited_by_link  -> their "allow others to add me" is OFF, so they
-    //                       only received the invite link in their chat
-    //   already_members  -> were already in
-    //   skipped          -> [{ user_id, reason }]  (blocked, group_full, ...)
+    // Stored on chats.group_avatar.
+    // ============================================================
+
+    
+public function updateAvatar(Request $request, $chatId)
+{
+    [$chat, $group] = $this->loadGroup($request, $chatId);
+
+    if (!$this->isAdmin($group, $request)) {
+        return $this->fail(
+            'Only group admins can change the group picture.',
+            403
+        );
+    }
+
+    $validator = Validator::make($request->all(), [
+        'file' => 'required|image|max:5120',
+    ]);
+
+    if ($validator->fails()) {
+        return response()->json([
+            'errors' => $validator->errors()
+        ], 422);
+    }
+
+    try {
+        $uploaded = cloudinary()->uploadApi()->upload(
+            $request->file('file')->getRealPath(),
+            [
+                'folder' => 'group_avatars',
+            ]
+        );
+
+        $chat->group_avatar = $uploaded['secure_url'];
+        $chat->save();
+
+        return response()->json([
+            'message' => 'Group picture updated successfully.',
+            'group_avatar' => $chat->fresh()->group_avatar,
+        ]);
+
+    } catch (\Throwable $e) {
+        Log::error('Group avatar upload failed', [
+            'chat_id' => $chat->id,
+            'error' => $e->getMessage(),
+        ]);
+
+        return response()->json([
+            'message' => 'Could not upload group picture. Please try again.',
+        ], 500);
+    }
+}
+
+
+    // ============================================================
+    // ADD MEMBERS
+    // ============================================================
 
     public function addMembers(Request $request, $chatId)
     {
         [$chat, $group] = $this->loadGroup($request, $chatId);
 
         if (!self::MEMBERS_CAN_ADD && !$this->isAdmin($group, $request)) {
-            return $this->fail('Only the group admin can add people.', 403);
+            return $this->fail('Only group admins can add people.', 403);
         }
 
         $validator = Validator::make($request->all(), [
-            'user_ids' => 'required|array|min:1|max:255',
+            'user_ids' => 'required|array|min:1|max:' . self::MAX_MEMBERS,
             'user_ids.*' => 'integer',
         ]);
 
@@ -164,51 +212,208 @@ class GroupController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $result = $this->addPeople($request, $chat, $group, $request->user_ids);
+        $result = $this->addPeople(
+            $request,
+            $chat,
+            $group,
+            $request->input('user_ids')
+        );
 
-        return response()->json(array_merge(
-            ['group' => $this->present($chat, $group, (int) $request->user()->id)],
-            $result
-        ));
+        return response()->json(array_merge([
+            'group' => $this->present($chat->fresh(), $group->fresh(), (int) $request->user()->id),
+        ], $result));
     }
 
     // ============================================================
-    // REMOVE A MEMBER (admin only)
+    // PROMOTE MEMBER TO ADMIN
     // ============================================================
     //
-    // POST /groups/{chatId}/members/{userId}/remove
+    // POST /groups/{chatId}/members/{userId}/promote
+    // ============================================================
+
+    public function promoteAdmin(Request $request, $chatId, $userId)
+    {
+        [$chat, $group] = $this->loadGroup($request, $chatId);
+
+        if (!$this->isAdmin($group, $request)) {
+            return $this->fail('Only group admins can promote members.', 403);
+        }
+
+        $userId = (int) $userId;
+
+        $participant = $chat->participants()
+            ->where('user_id', $userId)
+            ->first();
+
+        if (!$participant) {
+            return $this->fail('This person is not a member of the group.', 404);
+        }
+
+        if ($userId === (int) $group->created_by) {
+            return $this->fail('The group owner is already an admin.', 422);
+        }
+
+        if ($participant->role === 'admin') {
+            return $this->fail('This person is already an admin.', 422);
+        }
+
+        $participant->update(['role' => 'admin']);
+
+        return response()->json([
+            'message' => 'Member promoted to admin successfully.',
+            'group' => $this->present($chat->fresh(), $group->fresh(), (int) $request->user()->id),
+        ]);
+    }
+
+    // ============================================================
+    // DEMOTE ADMIN
+    // ============================================================
+    //
+    // POST /groups/{chatId}/members/{userId}/demote
+    // ============================================================
+
+    public function demoteAdmin(Request $request, $chatId, $userId)
+    {
+        [$chat, $group] = $this->loadGroup($request, $chatId);
+
+        if (!$this->isAdmin($group, $request)) {
+            return $this->fail('Only group admins can demote admins.', 403);
+        }
+
+        $userId = (int) $userId;
+
+        // Nobody can demote the original/current owner.
+        if ($userId === (int) $group->created_by) {
+            return $this->fail('The group owner cannot be demoted.', 403);
+        }
+
+        if ($userId === (int) $request->user()->id) {
+            return $this->fail('You cannot demote yourself.', 422);
+        }
+
+        $participant = $chat->participants()
+            ->where('user_id', $userId)
+            ->first();
+
+        if (!$participant) {
+            return $this->fail('This person is not a group member.', 404);
+        }
+
+        if ($participant->role !== 'admin') {
+            return $this->fail('This person is not an admin.', 422);
+        }
+
+        $participant->update(['role' => 'member']);
+
+        return response()->json([
+            'message' => 'Admin demoted successfully.',
+            'group' => $this->present($chat->fresh(), $group->fresh(), (int) $request->user()->id),
+        ]);
+    }
+
+    // ============================================================
+    // TRANSFER GROUP OWNERSHIP
+    // ============================================================
+    //
+    // POST /groups/{chatId}/transfer-ownership
+    // { user_id: 25 }
+    //
+    // Only the current owner can transfer ownership.
+    // The recipient must already be an admin.
+    // ============================================================
+
+    public function transferOwnership(Request $request, $chatId)
+    {
+        [$chat, $group] = $this->loadGroup($request, $chatId);
+
+        if (!$this->isOwner($group, $request)) {
+            return $this->fail('Only the group owner can transfer ownership.', 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'user_id' => 'required|integer',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $newOwnerId = (int) $request->user_id;
+
+        if ($newOwnerId === (int) $group->created_by) {
+            return $this->fail('You are already the group owner.', 422);
+        }
+
+        $newOwner = $chat->participants()
+            ->where('user_id', $newOwnerId)
+            ->first();
+
+        if (!$newOwner) {
+            return $this->fail('The new owner must be a group member.', 404);
+        }
+
+        if ($newOwner->role !== 'admin') {
+            return $this->fail('Promote this member to admin before transferring ownership.', 422);
+        }
+
+        DB::transaction(function () use ($group, $newOwner) {
+            $group->update([
+                'created_by' => $newOwner->user_id,
+            ]);
+
+            // Both the new owner and previous owner remain admins.
+            $newOwner->update(['role' => 'admin']);
+        });
+
+        return response()->json([
+            'message' => 'Group ownership transferred successfully.',
+            'group' => $this->present(
+                $chat->fresh(),
+                $group->fresh(),
+                (int) $request->user()->id
+            ),
+        ]);
+    }
+
+    // ============================================================
+    // REMOVE MEMBER
+    // ============================================================
 
     public function removeMember(Request $request, $chatId, $userId)
     {
         [$chat, $group] = $this->loadGroup($request, $chatId);
 
         if (!$this->isAdmin($group, $request)) {
-            return $this->fail('Only the group admin can remove people.', 403);
+            return $this->fail('Only group admins can remove members.', 403);
         }
 
         $userId = (int) $userId;
 
         if ($userId === (int) $request->user()->id) {
-            return $this->fail('Use "Leave group" to leave.', 422);
+            return $this->fail('Use the leave group endpoint to leave.', 422);
         }
 
-        $deleted = $chat->participants()->where('user_id', $userId)->delete();
+        // Absolute owner protection.
+        if ($userId === (int) $group->created_by) {
+            return $this->fail('The group owner cannot be removed.', 403);
+        }
+
+        $deleted = $chat->participants()
+            ->where('user_id', $userId)
+            ->delete();
 
         if (!$deleted) {
             return $this->fail('That person is not in this group.', 404);
         }
 
-        return response()->json(['message' => 'Removed from the group.']);
+        return response()->json([
+            'message' => 'Member removed successfully.',
+        ]);
     }
 
     // ============================================================
     // LEAVE GROUP
     // ============================================================
-    //
-    // POST /groups/{chatId}/leave
-    //
-    // If the admin leaves, the next member becomes admin. If nobody is
-    // left, the group is deleted.
 
     public function leave(Request $request, $chatId)
     {
@@ -216,28 +421,35 @@ class GroupController extends Controller
 
         $userId = (int) $request->user()->id;
 
-        $chat->participants()->where('user_id', $userId)->delete();
-
-        $next = $chat->participants()->value('user_id');
-
-        if (!$next) {
-            $chat->delete(); // cascades to messages and the groups row
-
-            return response()->json(['message' => 'You left the group.']);
+        // Owner must transfer ownership first.
+        if ($this->isOwner($group, $request)) {
+            return $this->fail(
+                'You are the group owner. Transfer ownership to another admin before leaving.',
+                422
+            );
         }
 
-        if ((int) $group->created_by === $userId) {
-            $group->update(['created_by' => $next]);
+        $chat->participants()
+            ->where('user_id', $userId)
+            ->delete();
+
+        if ($chat->participants()->count() === 0) {
+            $chat->delete();
+
+            return response()->json([
+                'message' => 'You left the group.',
+            ]);
         }
 
-        return response()->json(['message' => 'You left the group.']);
+        return response()->json([
+            'message' => 'You left the group.',
+        ]);
     }
 
     // ============================================================
     // INVITE LINK
     // ============================================================
 
-    // GET /groups/{chatId}/invite
     public function invite(Request $request, $chatId)
     {
         [$chat, $group] = $this->loadGroup($request, $chatId);
@@ -248,13 +460,12 @@ class GroupController extends Controller
         ]);
     }
 
-    // POST /groups/{chatId}/invite/reset   (old link stops working)
     public function resetInvite(Request $request, $chatId)
     {
         [$chat, $group] = $this->loadGroup($request, $chatId);
 
         if (!$this->isAdmin($group, $request)) {
-            return $this->fail('Only the group admin can do that.', 403);
+            return $this->fail('Only group admins can reset the invite link.', 403);
         }
 
         $group->resetInviteCode();
@@ -265,18 +476,21 @@ class GroupController extends Controller
         ]);
     }
 
-    // POST /groups/{chatId}/invite/enabled   { enabled: true|false }
     public function setInviteEnabled(Request $request, $chatId)
     {
         [$chat, $group] = $this->loadGroup($request, $chatId);
 
         if (!$this->isAdmin($group, $request)) {
-            return $this->fail('Only the group admin can do that.', 403);
+            return $this->fail('Only group admins can change invite settings.', 403);
         }
 
-        $request->validate(['enabled' => 'required|boolean']);
+        $request->validate([
+            'enabled' => 'required|boolean'
+        ]);
 
-        $group->update(['invite_link_enabled' => $request->boolean('enabled')]);
+        $group->update([
+            'invite_link_enabled' => $request->boolean('enabled')
+        ]);
 
         return response()->json([
             'invite_link_enabled' => $group->invite_link_enabled,
@@ -285,10 +499,9 @@ class GroupController extends Controller
     }
 
     // ============================================================
-    // JOIN BY LINK
+    // JOIN BY INVITE LINK
     // ============================================================
 
-    // GET /groups/join/{code}  — what the "Join this group?" screen shows
     public function previewInvite(Request $request, string $code)
     {
         $group = Group::where('invite_code', $code)
@@ -297,7 +510,7 @@ class GroupController extends Controller
 
         $chat = $group?->chat;
 
-        if (!$group || !$chat || ($chat->type ?? '') !== 'group') {
+        if (!$group || !$chat || $chat->type !== 'group') {
             return $this->fail('This invite link is invalid or has expired.', 404);
         }
 
@@ -306,14 +519,14 @@ class GroupController extends Controller
         return response()->json([
             'chat_id' => $chat->id,
             'name' => $chat->name,
-            'group_avatar' => $chat->group_avatar ?? null, // ASSUMPTION: column name
+            'group_avatar' => $chat->group_avatar,
             'description' => $group->description,
             'member_count' => $chat->participants()->count(),
-            'already_member' => $chat->participants()->where('user_id', $userId)->exists(),
+            'already_member' => $chat->participants()
+                ->where('user_id', $userId)->exists(),
         ]);
     }
 
-    // POST /groups/join/{code}
     public function join(Request $request, string $code)
     {
         $group = Group::where('invite_code', $code)
@@ -322,35 +535,38 @@ class GroupController extends Controller
 
         $chat = $group?->chat;
 
-        if (!$group || !$chat || ($chat->type ?? '') !== 'group') {
+        if (!$group || !$chat || $chat->type !== 'group') {
             return $this->fail('This invite link is invalid or has expired.', 404);
         }
 
         $userId = (int) $request->user()->id;
 
-        $isMember = $chat->participants()->where('user_id', $userId)->exists();
+        $isMember = $chat->participants()
+            ->where('user_id', $userId)->exists();
 
         if (!$isMember) {
-            if ($chat->participants()->count() >= $group->max_members) {
+            if ($chat->participants()->count() >= self::MAX_MEMBERS) {
                 return $this->fail('This group is full.', 422);
             }
 
-            $chat->participants()->forceCreate(['user_id' => $userId]);
+            $chat->participants()->forceCreate([
+                'user_id' => $userId,
+                'role' => 'member',
+            ]);
         }
 
         return response()->json([
             'chat_id' => $chat->id,
             'name' => $chat->name,
-            'group_avatar' => $chat->group_avatar ?? null,
+            'group_avatar' => $chat->group_avatar,
             'already_member' => $isMember,
         ]);
     }
 
     // ============================================================
-    // MY PRIVACY SETTING: "Allow others to add me to groups"
+    // PRIVACY SETTINGS
     // ============================================================
 
-    // GET /settings/privacy
     public function privacy(Request $request)
     {
         return response()->json([
@@ -358,10 +574,11 @@ class GroupController extends Controller
         ]);
     }
 
-    // POST /settings/privacy   { allow_group_adds: true|false }
     public function updatePrivacy(Request $request)
     {
-        $request->validate(['allow_group_adds' => 'required|boolean']);
+        $request->validate([
+            'allow_group_adds' => 'required|boolean'
+        ]);
 
         $user = $request->user();
 
@@ -375,7 +592,7 @@ class GroupController extends Controller
     }
 
     // ============================================================
-    // THE HEART OF IT: add people, respecting allow_group_adds
+    // ADD PEOPLE HELPER
     // ============================================================
 
     private function addPeople(Request $request, Chat $chat, Group $group, array $userIds): array
@@ -390,7 +607,7 @@ class GroupController extends Controller
             ->map(fn ($id) => (int) $id)
             ->all();
 
-        $room = (int) $group->max_members - count($existing);
+        $room = self::MAX_MEMBERS - count($existing);
 
         $users = User::whereIn('id', $userIds)->get()->keyBy('id');
 
@@ -412,8 +629,6 @@ class GroupController extends Controller
                 continue;
             }
 
-            // They blocked the person who is trying to add them: do nothing,
-            // don't even send the link.
             if ($this->hasBlocked($id, (int) $adder->id)) {
                 $skipped[] = ['user_id' => $id, 'reason' => 'blocked'];
                 continue;
@@ -427,16 +642,18 @@ class GroupController extends Controller
                     continue;
                 }
 
-                $chat->participants()->forceCreate(['user_id' => $id]);
+                $chat->participants()->forceCreate([
+                    'user_id' => $id,
+                    'role' => 'member',
+                ]);
 
                 $existing[] = $id;
                 $room--;
                 $added[] = $id;
+
                 continue;
             }
 
-            // allow_group_adds is OFF: NOT added. Only the link goes to
-            // their chat with the person who tried to add them.
             if (!$group->invite_link_enabled) {
                 $skipped[] = ['user_id' => $id, 'reason' => 'invite_link_disabled'];
                 continue;
@@ -457,10 +674,10 @@ class GroupController extends Controller
         ];
     }
 
-    /**
-     * Sends the invite link as a normal text message in the private chat
-     * between the person adding and the person who turned adds off.
-     */
+    // ============================================================
+    // SEND INVITE LINK MESSAGE
+    // ============================================================
+
     private function sendInviteLinkMessage(
         Request $request,
         User $adder,
@@ -495,9 +712,6 @@ class GroupController extends Controller
                 ]);
             }
 
-            // Push notification AFTER the answer has been sent (same idea
-            // as MessageController::store). This calls the existing push
-            // code — see the note about making that method public.
             app()->terminating(function () use ($request, $privateChat, $message) {
                 try {
                     app(MessageController::class)
@@ -511,6 +725,7 @@ class GroupController extends Controller
             });
 
             return true;
+
         } catch (\Throwable $e) {
             Log::warning('Could not send group invite link', [
                 'group_chat_id' => $groupChat->id,
@@ -522,7 +737,6 @@ class GroupController extends Controller
         }
     }
 
-    /** Finds the one-to-one chat between two people, or creates it. */
     private function privateChatBetween(User $a, User $b): Chat
     {
         $chat = Chat::where('type', 'private')
@@ -534,12 +748,17 @@ class GroupController extends Controller
             return $chat;
         }
 
-        // TODO: if your POST /chats/private sets any extra columns when it
-        // creates a private chat, copy them here so both ways match.
         $chat = Chat::forceCreate(['type' => 'private']);
 
-        $chat->participants()->forceCreate(['user_id' => $a->id]);
-        $chat->participants()->forceCreate(['user_id' => $b->id]);
+        $chat->participants()->forceCreate([
+            'user_id' => $a->id,
+            'role' => 'member',
+        ]);
+
+        $chat->participants()->forceCreate([
+            'user_id' => $b->id,
+            'role' => 'member',
+        ]);
 
         return $chat;
     }
@@ -548,7 +767,6 @@ class GroupController extends Controller
     // HELPERS
     // ============================================================
 
-    /** Has $ownerId blocked $otherId in their contacts? */
     private function hasBlocked(int $ownerId, int $otherId): bool
     {
         return Contact::where('user_id', $ownerId)
@@ -557,13 +775,11 @@ class GroupController extends Controller
             ->exists();
     }
 
-    /** Loads the group chat, checks the caller is a member, makes sure the
-     *  groups row exists (older groups) and that it has an admin. */
     private function loadGroup(Request $request, $chatId): array
     {
         $chat = Chat::findOrFail($chatId);
 
-        abort_unless(($chat->type ?? '') === 'group', 404, 'Group not found.');
+        abort_unless($chat->type === 'group', 404, 'Group not found.');
 
         $isMember = $chat->participants()
             ->where('user_id', $request->user()->id)
@@ -571,57 +787,111 @@ class GroupController extends Controller
 
         abort_unless($isMember, 403, 'You are not part of this group.');
 
-        $group = Group::firstOrCreate(['chat_id' => $chat->id]);
+        $group = Group::firstOrCreate([
+            'chat_id' => $chat->id
+        ]);
 
-        // Groups made before this feature have no admin yet: the first
-        // member becomes admin.
+        // Repair older groups without an owner.
         if (!$group->created_by) {
-            $first = $chat->participants()->value('user_id');
+            $first = $chat->participants()
+                ->orderBy('id')
+                ->first();
 
             if ($first) {
-                $group->update(['created_by' => $first]);
+                DB::transaction(function () use ($group, $first) {
+                    $group->update([
+                        'created_by' => $first->user_id
+                    ]);
+
+                    $first->update(['role' => 'admin']);
+                });
             }
+        }
+
+        // The owner must always have admin role.
+        if ($group->created_by) {
+            $chat->participants()
+                ->where('user_id', $group->created_by)
+                ->where('role', '!=', 'admin')
+                ->update(['role' => 'admin']);
         }
 
         return [$chat, $group];
     }
 
-    private function isAdmin(Group $group, Request $request): bool
+    private function isOwner(Group $group, Request $request): bool
     {
         return (int) $group->created_by === (int) $request->user()->id;
     }
 
-    private function fail(string $message, int $status)
+    private function isAdmin(Group $group, Request $request): bool
     {
-        return response()->json(['message' => $message], $status);
+        $userId = (int) $request->user()->id;
+
+        if ((int) $group->created_by === $userId) {
+            return true;
+        }
+
+        return $group->chat->participants()
+            ->where('user_id', $userId)
+            ->where('role', 'admin')
+            ->exists();
     }
 
-    /** The group as the app wants it. */
+    private function fail(string $message, int $status)
+    {
+        return response()->json([
+            'message' => $message
+        ], $status);
+    }
+
+    // ============================================================
+    // API RESPONSE
+    // ============================================================
+
     private function present(Chat $chat, Group $group, int $viewerId): array
     {
-        $memberIds = $chat->participants()
-            ->pluck('user_id')
-            ->map(fn ($id) => (int) $id)
-            ->all();
+        $participants = $chat->participants()
+            ->with('user')
+            ->get();
 
-        $members = User::whereIn('id', $memberIds)->get()->map(fn ($u) => [
-            'id' => (int) $u->id,
-            'name' => $u->name,
-            'avatar_url' => $u->avatar_url ?? null,
-            'phone_number' => $u->phone_number ?? null,
-            'is_admin' => (int) $group->created_by === (int) $u->id,
-        ])->values();
+        $members = $participants
+            ->filter(fn ($participant) => $participant->user !== null)
+            ->map(function ($participant) use ($group) {
+                $user = $participant->user;
+
+                $isOwner = (int) $group->created_by === (int) $user->id;
+
+                return [
+                    'id' => (int) $user->id,
+                    'name' => $user->name,
+                    'avatar_url' => $user->avatar_url ?? null,
+                    'phone_number' => $user->phone_number ?? null,
+                    'role' => $isOwner ? 'admin' : $participant->role,
+                    'is_admin' => $isOwner || $participant->role === 'admin',
+                    'is_owner' => $isOwner,
+                ];
+            })
+            ->values();
+
+        $viewer = $participants->first(
+            fn ($participant) => (int) $participant->user_id === $viewerId
+        );
+
+        $isOwner = (int) $group->created_by === $viewerId;
+        $isAdmin = $isOwner || ($viewer && $viewer->role === 'admin');
 
         return [
-            'chat_id' => $chat->id,
+            'chat_id' => (int) $chat->id,
             'name' => $chat->name,
-            'group_avatar' => $chat->group_avatar ?? null, // ASSUMPTION: column name
+            'group_avatar' => $chat->group_avatar,
             'description' => $group->description,
-            'created_by' => $group->created_by,
-            'is_admin' => (int) $group->created_by === $viewerId,
-            'member_count' => count($memberIds),
-            'max_members' => $group->max_members,
-            'invite_link_enabled' => $group->invite_link_enabled,
+            'created_by' => (int) $group->created_by,
+            'is_admin' => (bool) $isAdmin,
+            'is_owner' => $isOwner,
+            'member_count' => $participants->count(),
+            'max_members' => self::MAX_MEMBERS,
+            'invite_link_enabled' => (bool) $group->invite_link_enabled,
             'invite_link' => $group->invite_link_enabled ? $group->invite_link : null,
             'members' => $members,
         ];
