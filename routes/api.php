@@ -122,7 +122,7 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::get('/chats', [ChatController::class, 'index']);
     Route::post('/chats/private', [ChatController::class, 'startPrivate']);
     Route::post('/chats/group', [ChatController::class, 'startGroup']);
-    RRoute::post('/chats/{chatId}/delete-conversation', [ChatController::class, 'deleteConversation']);
+    Route::post('/chats/{chatId}/delete-conversation', [ChatController::class, 'deleteConversation']);
 
     // Existing message routes
     Route::get(
