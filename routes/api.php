@@ -26,7 +26,7 @@ Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
         'version_code' => 22,
-        'download_url' => 'https://coremonitor.in/downloads/swiftchat-1.0.0+22.apk',
+        'download_url' => 'https://wixchatweb.com/downloads/swiftchat-1.0.0+22.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
