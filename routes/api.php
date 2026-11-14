@@ -21,12 +21,13 @@ use App\Http\Controllers\Api\CallController;
 use App\Http\Controllers\Api\GroupCallController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\FontLibraryController;
+use App\Http\Controllers\Api\ScheduledMessageController;
 
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 22,
-        'download_url' => 'https://wixchatweb.com/downloads/swiftchat-1.0.0+22.apk',
+        'version_code' => 23,
+        'download_url' => 'https://wixchatweb.com/downloads/swiftchat-1.0.0+23.apk',
         'message' => 'Please update to access new features.',
     ]);
 });
@@ -176,6 +177,14 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
     Route::get('/updates/{uuid}', [UpdateController::class, 'show']);
     Route::post('/updates/{uuid}/view', [UpdateController::class, 'view']);
     Route::delete('/updates/{uuid}', [UpdateController::class, 'destroy']);
+
+    // SCHEDULED MESSAGES
+
+    Route::get('/chats/{chatId}/scheduled-messages', [ScheduledMessageController::class, 'index']);
+    Route::post('/chats/{chatId}/scheduled-messages', [ScheduledMessageController::class, 'store']);
+    Route::post('/scheduled-messages/{id}/update', [ScheduledMessageController::class, 'update']);
+    Route::post('/scheduled-messages/{id}/cancel', [ScheduledMessageController::class, 'cancel']);
+    Route::post('/scheduled-messages/{id}/send-now', [ScheduledMessageController::class, 'sendNow']);
 
     // Reposts
     Route::post('/updates/{uuid}/repost', [UpdateController::class, 'repost']);
