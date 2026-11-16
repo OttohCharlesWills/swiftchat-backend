@@ -22,7 +22,6 @@ use App\Http\Controllers\Api\GroupCallController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\FontLibraryController;
 use App\Http\Controllers\Api\ScheduledMessageController;
-use App\Http\Controllers\Api\ExternalCronController;
 
 Route::get('/app-version', function () {
     return response()->json([
@@ -47,11 +46,6 @@ Route::post('/verify-otp', [RegisterController::class, 'verifyAccount']);
 Route::post('/request-verification-code', [RegisterController::class, 'requestVerificationCode']);
 
 Route::post('/login', [LoginController::class, 'login']);
-
-    Route::get(
-        '/internal/cron/scheduled-messages',
-        [ExternalCronController::class, 'sendScheduledMessages']
-    )->middleware('throttle:2,1');
 Route::post('/verify-login-otp', [LoginController::class, 'verifyLoginOtp']);
 
 // Public — desktop page hits these before it has any auth token
@@ -85,7 +79,6 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         '/chats/{chatId}/upload-voice',
         [MessageController::class, 'uploadVoice']
     );
-
 
 
     Route::get('/unread-count', [UnreadController::class, 'count']);

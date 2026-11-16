@@ -50,9 +50,4 @@ return [
         'key' => env('GOOGLE_FONTS_API_KEY'),
     ],
 
-    'wixchat_cron' => [
-        'username' => env('WIXCHAT_CRON_USERNAME'),
-        'password' => env('WIXCHAT_CRON_PASSWORD'),
-    ],
-
 ];
