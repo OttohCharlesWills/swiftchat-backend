@@ -51,7 +51,8 @@ return [
     ],
 
     'wixchat_cron' => [
-        'token' => env('WIXCHAT_CRON_TOKEN'),
+        'username' => env('WIXCHAT_CRON_USERNAME'),
+        'password' => env('WIXCHAT_CRON_PASSWORD'),
     ],
 
 ];
