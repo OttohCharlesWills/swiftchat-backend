@@ -81,7 +81,7 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         [MessageController::class, 'uploadVoice']
     );
 
-    Route::post(
+    Route::get(
         '/internal/cron/scheduled-messages',
         [ExternalCronController::class, 'sendScheduledMessages']
     )->middleware('throttle:2,1');
