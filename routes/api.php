@@ -47,6 +47,11 @@ Route::post('/verify-otp', [RegisterController::class, 'verifyAccount']);
 Route::post('/request-verification-code', [RegisterController::class, 'requestVerificationCode']);
 
 Route::post('/login', [LoginController::class, 'login']);
+
+    Route::get(
+        '/internal/cron/scheduled-messages',
+        [ExternalCronController::class, 'sendScheduledMessages']
+    )->middleware('throttle:2,1');
 Route::post('/verify-login-otp', [LoginController::class, 'verifyLoginOtp']);
 
 // Public — desktop page hits these before it has any auth token
@@ -81,10 +86,6 @@ Route::middleware(['auth:sanctum', 'verified.user'])->group(function () {
         [MessageController::class, 'uploadVoice']
     );
 
-    Route::get(
-        '/internal/cron/scheduled-messages',
-        [ExternalCronController::class, 'sendScheduledMessages']
-    )->middleware('throttle:2,1');
 
 
     Route::get('/unread-count', [UnreadController::class, 'count']);
