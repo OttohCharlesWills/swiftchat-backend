@@ -1578,7 +1578,7 @@ class MessageController extends Controller
     // PUSH NOTIFICATION
     // ============================================================
 
-    public function sendPushToOtherParticipants(
+    private function sendPushToOtherParticipants(
         Request $request,
         Chat $chat,
         Message $message
