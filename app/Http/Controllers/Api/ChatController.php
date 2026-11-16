@@ -7,6 +7,7 @@ use App\Models\Chat;
 use App\Models\Message;
 use App\Services\UnreadService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 
 class ChatController extends Controller
