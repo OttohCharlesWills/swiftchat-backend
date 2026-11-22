@@ -7,6 +7,7 @@ use App\Events\NewMessage;
 use App\Http\Controllers\Controller;
 use App\Models\Chat;
 use App\Models\Contact;
+use App\Models\Group;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Models\MessageView;
@@ -41,6 +42,12 @@ class MessageController extends Controller
      * phones, then flip it to true.
      */
     private const DATA_ONLY_PUSH = false;
+
+    /**
+     * The message type of "a status was tagged in this group".
+     * (Created by UpdateController when a status is tagged in a group.)
+     */
+    private const GROUP_STATUS_TYPE = 'group_status';
 
     public function __construct(
         protected SupabaseService $supabase
@@ -488,6 +495,13 @@ class MessageController extends Controller
             ], 422);
         }
 
+        // A status that was tagged in a group stays in that group.
+        if ($source->type === self::GROUP_STATUS_TYPE) {
+            return response()->json([
+                'message' => 'A tagged status cannot be forwarded.',
+            ], 422);
+        }
+
         // You must be in the chat the message came from.
         $inSourceChat = Chat::findOrFail($source->chat_id)
             ->participants()
@@ -762,29 +776,45 @@ class MessageController extends Controller
             ->where('id', $messageId)
             ->firstOrFail();
 
-        // --------------------------------------------------------
-        // ONLY ORIGINAL SENDER CAN DELETE FOR EVERYONE
-        // --------------------------------------------------------
+        $userId = (int) $request->user()->id;
 
-        if (
-            (int) $message->sender_id !==
-            (int) $request->user()->id
-        ) {
-            return response()->json([
-                'message' =>
-                    'Only the sender can delete this message for everyone.',
-            ], 403);
-        }
+        if ($message->type === self::GROUP_STATUS_TYPE) {
+            // ----------------------------------------------------
+            // A TAGGED STATUS: ONLY GROUP ADMINS CAN DELETE IT FOR
+            // EVERYONE - at any time, even if somebody else posted it.
+            // ----------------------------------------------------
 
-        // --------------------------------------------------------
-        // 20-MINUTE LIMIT
-        // --------------------------------------------------------
+            if (
+                ($chat->type ?? 'private') !== 'group'
+                || !$this->isGroupAdmin($chat, $userId)
+            ) {
+                return response()->json([
+                    'message' =>
+                        'Only group admins can delete a status for everyone.',
+                ], 403);
+            }
+        } else {
+            // ----------------------------------------------------
+            // ONLY ORIGINAL SENDER CAN DELETE FOR EVERYONE
+            // ----------------------------------------------------
 
-        if ($message->created_at->lt(now()->subMinutes(20))) {
-            return response()->json([
-                'message' =>
-                    'This message is older than 20 minutes and can only be deleted for you.',
-            ], 422);
+            if ((int) $message->sender_id !== $userId) {
+                return response()->json([
+                    'message' =>
+                        'Only the sender can delete this message for everyone.',
+                ], 403);
+            }
+
+            // ----------------------------------------------------
+            // 20-MINUTE LIMIT
+            // ----------------------------------------------------
+
+            if ($message->created_at->lt(now()->subMinutes(20))) {
+                return response()->json([
+                    'message' =>
+                        'This message is older than 20 minutes and can only be deleted for you.',
+                ], 422);
+            }
         }
 
         // --------------------------------------------------------
@@ -835,7 +865,8 @@ class MessageController extends Controller
             'attachment_path' => null,
             // A deleted sticker message no longer points at a sticker.
             'sticker_id' => null,
-            // The quoted Update card goes too.
+            // The quoted Update card goes too. (For a tagged status this
+            // also stops non-contacts of the owner from opening it.)
             'update_preview' => null,
         ]);
 
@@ -985,6 +1016,10 @@ class MessageController extends Controller
      */
     private function presentMessage(Message $message): Message
     {
+        // Group messages show the sender's name / number, so the sender's
+        // phone number must be part of the JSON.
+        $this->exposeSenderPhones($message);
+
         // VIEW ONCE: the photo / voice note is never put in the message JSON
         // (list, send answer or realtime). The receiver only gets a link at
         // the moment they open it (see openViewOnce). Never save() this
@@ -1012,6 +1047,18 @@ class MessageController extends Controller
         }
 
         return $message;
+    }
+
+    /**
+     * Makes sure `phone_number` is part of the JSON of the message's sender
+     * (and of the sender of the message it replies to), even if the User
+     * model hides it. The app shows the name you saved, or the number.
+     */
+    private function exposeSenderPhones(Message $message): void
+    {
+        $message->sender?->makeVisible('phone_number');
+
+        $message->replyTo?->sender?->makeVisible('phone_number');
     }
 
     // ============================================================
@@ -1338,6 +1385,28 @@ class MessageController extends Controller
         );
     }
 
+    // ============================================================
+    // GROUP ADMIN CHECK
+    // ============================================================
+
+    /**
+     * Same rule as GroupController: the group owner, or a member whose role
+     * is "admin".
+     */
+    private function isGroupAdmin(Chat $chat, int $userId): bool
+    {
+        $group = Group::where('chat_id', $chat->id)->first();
+
+        if ($group && (int) $group->created_by === $userId) {
+            return true;
+        }
+
+        return $chat->participants()
+            ->where('user_id', $userId)
+            ->where('role', 'admin')
+            ->exists();
+    }
+
     public function update(
         Request $request,
         $chatId,
@@ -1415,6 +1484,8 @@ class MessageController extends Controller
             'views',
         ]);
 
+        $this->exposeSenderPhones($message);
+
         // Realtime: the SAME event as a new message. The app already has
         // this id, sees is_edited = true, and swaps the text.
         // (No push notification for edits.)
@@ -1476,6 +1547,7 @@ class MessageController extends Controller
                 'video'   => 'your video',
                 'file'    => 'your document',
                 'sticker' => 'your sticker',
+                self::GROUP_STATUS_TYPE => 'your status',
                 default   => 'your message',
             };
         }
@@ -1578,7 +1650,12 @@ class MessageController extends Controller
     // PUSH NOTIFICATION
     // ============================================================
 
-    private function sendPushToOtherParticipants(
+    /**
+     * PUBLIC on purpose: GroupController (invite links) and
+     * UpdateController (tagged statuses) call it too. It used to be
+     * private, which made those calls fail silently.
+     */
+    public function sendPushToOtherParticipants(
         Request $request,
         Chat $chat,
         Message $message
@@ -1617,6 +1694,7 @@ class MessageController extends Controller
             'video'   => 'Video',
             'file'    => 'Document',
             'sticker' => 'Sent a sticker 🏷️',
+            self::GROUP_STATUS_TYPE => 'Tagged this group in a status',
             default   => ucfirst((string) $message->type),
         };
 
@@ -1627,8 +1705,12 @@ class MessageController extends Controller
                 : 'View once photo';
         }
 
-        // A private reply to someone's Update says so.
-        if (!empty($message->update_preview)) {
+        // A private reply to someone's Update says so. (A status tagged in
+        // a group also carries an update_preview, but it is not a reply.)
+        if (
+            !empty($message->update_preview)
+            && $message->type !== self::GROUP_STATUS_TYPE
+        ) {
             $preview = 'Replied to your update: ' . $preview;
         }
 

@@ -26,8 +26,8 @@ use App\Http\Controllers\Api\ScheduledMessageController;
 Route::get('/app-version', function () {
     return response()->json([
         'version' => '1.0.0',
-        'version_code' => 23,
-        'download_url' => 'https://wixchatweb.com/downloads/swiftchat-1.0.0+23.apk',
+        'version_code' => 24,
+        'download_url' => 'https://wixchatweb.com/downloads/swiftchat-1.0.0+24.apk',
         'message' => 'Please update to access new features.',
     ]);
 });

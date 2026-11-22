@@ -2,16 +2,31 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Events\NewMessage;
 use App\Http\Controllers\Controller;
+use App\Models\Chat;
+use App\Models\Message;
 use App\Models\Update;
 use App\Models\UpdateView;
 use App\Services\CloudinaryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class UpdateController extends Controller
 {
+    /**
+     * The most groups one Update can be tagged in.
+     */
+    private const MAX_TAGGED_GROUPS = 10;
+
+    /**
+     * The message type used for "a status was tagged in this group".
+     * (The Flutter app draws it as a status card.)
+     */
+    private const GROUP_STATUS_TYPE = 'group_status';
+
     public function __construct(
         protected CloudinaryService $cloudinary
     ) {
@@ -19,6 +34,9 @@ class UpdateController extends Controller
 
     /**
      * Create a new Update.
+     *
+     * Optional: group_ids = the groups (chat ids) to tag. A "group_status"
+     * message is posted in each group the user belongs to.
      */
     public function store(Request $request)
     {
@@ -28,6 +46,8 @@ class UpdateController extends Controller
             'duration_hours' => 'required|integer|in:24,48',
             'allow_repost' => 'nullable|boolean',
             'media' => 'required_if:type,image,video|file|max:102400',
+            'group_ids' => 'nullable|array|max:' . self::MAX_TAGGED_GROUPS,
+            'group_ids.*' => 'integer',
         ]);
 
         // Validation does NOT cast types. Multipart/form fields arrive as
@@ -110,10 +130,27 @@ class UpdateController extends Controller
             ]);
         });
 
-        return response()->json([
+        // Tag the groups (a failure here never loses the Update itself).
+        $tagResult = $this->tagGroups(
+            $request,
+            $update,
+            (array) ($validated['group_ids'] ?? [])
+        );
+
+        $update->load('user');
+
+        $update->tagged_groups = $tagResult['tagged'];
+
+        $response = [
             'message' => 'Update created successfully.',
-            'update' => $update->load('user'),
-        ], 201);
+            'update' => $update,
+        ];
+
+        if (!empty($tagResult['skipped'])) {
+            $response['skipped_group_ids'] = $tagResult['skipped'];
+        }
+
+        return response()->json($response, 201);
     }
 
     /**
@@ -156,7 +193,7 @@ class UpdateController extends Controller
      * excludes the viewer's own posts, so without this endpoint a freshly
      * posted Update never shows up anywhere for its own author.
      */
-        public function mine(Request $request)
+    public function mine(Request $request)
     {
         $userId = $request->user()->id;
 
@@ -176,11 +213,13 @@ class UpdateController extends Controller
         $repliesByUuid = collect();
 
         if (!empty($uuids)) {
-            $repliesByUuid = \App\Models\Message::query()
+            $repliesByUuid = Message::query()
                 ->with('sender:id,name,avatar_url')
                 ->whereIn('update_preview->update_uuid', $uuids)
                 ->where('sender_id', '!=', $userId)
                 ->where('is_deleted', false)
+                // (The status cards posted in groups are not replies.)
+                ->where('type', '!=', self::GROUP_STATUS_TYPE)
                 ->latest()
                 ->get()
                 ->groupBy(fn ($m) => $m->update_preview['update_uuid'] ?? '');
@@ -206,6 +245,9 @@ class UpdateController extends Controller
                 ],
             ])->values();
         });
+
+        // The groups each Update is tagged in.
+        $this->attachTaggedGroups($updates);
 
         return response()->json([
             'updates' => $updates,
@@ -293,6 +335,249 @@ class UpdateController extends Controller
         ]);
     }
 
+    // ============================================================
+    // GROUP TAGGING
+    // ============================================================
+
+    /**
+     * Posts a "group_status" message in every group the user is a member
+     * of (from the requested group ids). Groups the user is not in are
+     * skipped, never an error.
+     *
+     * Returns:
+     *   tagged  = [{chat_id, name, avatar_url, message_id}, ...]
+     *   skipped = [group ids that were not used]
+     */
+    private function tagGroups(Request $request, Update $update, array $groupIds): array
+    {
+        $user = $request->user();
+
+        $groupIds = array_values(array_unique(array_map('intval', $groupIds)));
+        $groupIds = array_slice($groupIds, 0, self::MAX_TAGGED_GROUPS);
+
+        if (empty($groupIds)) {
+            return ['tagged' => [], 'skipped' => []];
+        }
+
+        // Only real groups that this user belongs to.
+        $chats = Chat::query()
+            ->where('type', 'group')
+            ->whereIn('id', $groupIds)
+            ->whereHas(
+                'participants',
+                fn ($q) => $q->where('user_id', $user->id)
+            )
+            ->get()
+            ->keyBy('id');
+
+        $preview = $this->buildPreview($update, $user);
+        $body = $this->previewBody($update);
+
+        $tagged = [];
+        $skipped = [];
+
+        foreach ($groupIds as $chatId) {
+            $chat = $chats->get($chatId);
+
+            if (!$chat) {
+                $skipped[] = $chatId;
+                continue;
+            }
+
+            try {
+                // forceFill: works even if these columns are not in the
+                // Message model's $fillable.
+                $message = new Message();
+
+                $message->forceFill([
+                    'chat_id' => $chat->id,
+                    'sender_id' => $user->id,
+                    'body' => $body,
+                    'type' => self::GROUP_STATUS_TYPE,
+                    'update_preview' => $preview,
+                    'is_deleted' => false,
+                    'deleted_for_user_ids' => null,
+                ])->save();
+
+                $message->load(['sender', 'replyTo.sender', 'sticker']);
+
+                try {
+                    broadcast(new NewMessage($message));
+                } catch (\Throwable $e) {
+                    Log::warning('Tagged status broadcast failed', [
+                        'message_id' => $message->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
+                app()->terminating(function () use ($request, $chat, $message) {
+                    try {
+                        app(MessageController::class)
+                            ->sendPushToOtherParticipants($request, $chat, $message);
+                    } catch (\Throwable $e) {
+                        Log::warning('Tagged status push failed', [
+                            'message_id' => $message->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                });
+
+                $tagged[] = [
+                    'chat_id' => (int) $chat->id,
+                    'name' => $chat->name,
+                    'avatar_url' => $chat->group_avatar,
+                    'message_id' => (int) $message->id,
+                ];
+            } catch (\Throwable $e) {
+                Log::warning('Could not tag a group in an Update', [
+                    'update_id' => $update->id,
+                    'chat_id' => $chatId,
+                    'error' => $e->getMessage(),
+                ]);
+
+                $skipped[] = $chatId;
+            }
+        }
+
+        return ['tagged' => $tagged, 'skipped' => $skipped];
+    }
+
+    /**
+     * The small preview stored on the message (the app draws the status
+     * card from it, and opens the Update with update_uuid).
+     */
+    private function buildPreview(Update $update, $owner): array
+    {
+        return [
+            'update_uuid' => $update->uuid,
+            'owner_id' => (int) $owner->id,
+            'owner_name' => $owner->name,
+            'type' => $update->type,
+            'caption' => $update->caption
+                ? Str::limit(trim($update->caption), 140)
+                : null,
+            'thumb_url' => $this->thumbUrlFor($update),
+        ];
+    }
+
+    /**
+     * The text of the message (the chats list shows it as the last
+     * message of the group).
+     */
+    private function previewBody(Update $update): string
+    {
+        $caption = trim((string) $update->caption);
+
+        if ($caption !== '') {
+            return 'Status: ' . Str::limit($caption, 60);
+        }
+
+        return match ($update->type) {
+            'video' => 'Video status',
+            'image' => 'Photo status',
+            default => 'Status',
+        };
+    }
+
+    /**
+     * A picture for the status card. Images use their own url. For videos,
+     * Cloudinary makes a still picture when the extension is .jpg.
+     */
+    private function thumbUrlFor(Update $update): ?string
+    {
+        $url = $update->cloudinary_url;
+
+        if (!$url) {
+            return null;
+        }
+
+        if ($update->type === 'video') {
+            return preg_replace('/\.[A-Za-z0-9]+(\?.*)?$/', '.jpg', $url);
+        }
+
+        return $url;
+    }
+
+    /**
+     * Sets `tagged_groups` on every Update of the collection, using the
+     * "group_status" messages that were posted for it.
+     */
+    private function attachTaggedGroups($updates): void
+    {
+        $uuids = $updates->pluck('uuid')->all();
+
+        $byUuid = collect();
+        $chats = collect();
+
+        if (!empty($uuids)) {
+            $messages = Message::query()
+                ->where('type', self::GROUP_STATUS_TYPE)
+                ->where('is_deleted', false)
+                ->whereIn('update_preview->update_uuid', $uuids)
+                ->get(['id', 'chat_id', 'update_preview']);
+
+            $chats = Chat::query()
+                ->whereIn('id', $messages->pluck('chat_id')->unique()->all())
+                ->get()
+                ->keyBy('id');
+
+            $byUuid = $messages->groupBy(
+                fn ($m) => $m->update_preview['update_uuid'] ?? ''
+            );
+        }
+
+        $updates->each(function ($update) use ($byUuid, $chats) {
+            $messages = $byUuid->get($update->uuid, collect());
+
+            $update->tagged_groups = $messages
+                ->map(function ($m) use ($chats) {
+                    $chat = $chats->get($m->chat_id);
+
+                    if (!$chat) {
+                        return null;
+                    }
+
+                    return [
+                        'chat_id' => (int) $chat->id,
+                        'name' => $chat->name,
+                        'avatar_url' => $chat->group_avatar,
+                        'message_id' => (int) $m->id,
+                    ];
+                })
+                ->filter()
+                ->values();
+        });
+    }
+
+    /**
+     * True when this Update was tagged in a group that the viewer is a
+     * member of (so group members can open it even if they are not
+     * contacts of the owner).
+     */
+    private function isTaggedInSharedGroup(int $viewerId, Update $update): bool
+    {
+        $chatIds = Message::query()
+            ->where('type', self::GROUP_STATUS_TYPE)
+            ->where('is_deleted', false)
+            ->where('update_preview->update_uuid', $update->uuid)
+            ->pluck('chat_id')
+            ->unique()
+            ->all();
+
+        if (empty($chatIds)) {
+            return false;
+        }
+
+        return Chat::query()
+            ->where('type', 'group')
+            ->whereIn('id', $chatIds)
+            ->whereHas(
+                'participants',
+                fn ($q) => $q->where('user_id', $viewerId)
+            )
+            ->exists();
+    }
+
     /**
      * Make sure a user is allowed to see an Update.
      */
@@ -310,11 +595,13 @@ class UpdateController extends Controller
             ->where('is_blocked', false)
             ->exists();
 
-        if (!$isContact) {
+        // Not a contact: still allowed when the owner tagged a group that
+        // the viewer is in.
+        if (!$isContact && !$this->isTaggedInSharedGroup($viewerId, $update)) {
             abort(403, 'You cannot view this Update.');
         }
 
-        // Check Update-specific blocklist.
+        // Check Update-specific blocklist (always respected).
         $isBlocked = DB::table('update_blocked_contacts')
             ->where('user_id', $update->user_id)
             ->where('blocked_user_id', $viewerId)
@@ -519,7 +806,7 @@ class UpdateController extends Controller
             'settings' => $settings,
         ]);
     }
-    
+
 
     /**
      * Get users blocked from seeing my Updates.
