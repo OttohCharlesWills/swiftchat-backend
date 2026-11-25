@@ -291,6 +291,7 @@ class ContactController extends Controller
                 'display_name' => $saved?->saved_name ?: $user->name,
                 'username' => $user->username,
                 'avatar_url' => $user->avatar_url,
+                'verified_badge' => (bool) ($user->verified_badge ?? false), // NEW
                 'is_contact' => (bool) $saved,
             ],
         ]);

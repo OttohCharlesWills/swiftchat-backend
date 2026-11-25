@@ -139,56 +139,54 @@ class GroupController extends Controller
     // Stored on chats.group_avatar.
     // ============================================================
 
-    
-public function updateAvatar(Request $request, $chatId)
-{
-    [$chat, $group] = $this->loadGroup($request, $chatId);
+    public function updateAvatar(Request $request, $chatId)
+    {
+        [$chat, $group] = $this->loadGroup($request, $chatId);
 
-    if (!$this->isAdmin($group, $request)) {
-        return $this->fail(
-            'Only group admins can change the group picture.',
-            403
-        );
-    }
+        if (!$this->isAdmin($group, $request)) {
+            return $this->fail(
+                'Only group admins can change the group picture.',
+                403
+            );
+        }
 
-    $validator = Validator::make($request->all(), [
-        'file' => 'required|image|max:5120',
-    ]);
-
-    if ($validator->fails()) {
-        return response()->json([
-            'errors' => $validator->errors()
-        ], 422);
-    }
-
-    try {
-        $uploaded = cloudinary()->uploadApi()->upload(
-            $request->file('file')->getRealPath(),
-            [
-                'folder' => 'group_avatars',
-            ]
-        );
-
-        $chat->group_avatar = $uploaded['secure_url'];
-        $chat->save();
-
-        return response()->json([
-            'message' => 'Group picture updated successfully.',
-            'group_avatar' => $chat->fresh()->group_avatar,
+        $validator = Validator::make($request->all(), [
+            'file' => 'required|image|max:5120',
         ]);
 
-    } catch (\Throwable $e) {
-        Log::error('Group avatar upload failed', [
-            'chat_id' => $chat->id,
-            'error' => $e->getMessage(),
-        ]);
+        if ($validator->fails()) {
+            return response()->json([
+                'errors' => $validator->errors()
+            ], 422);
+        }
 
-        return response()->json([
-            'message' => 'Could not upload group picture. Please try again.',
-        ], 500);
+        try {
+            $uploaded = cloudinary()->uploadApi()->upload(
+                $request->file('file')->getRealPath(),
+                [
+                    'folder' => 'group_avatars',
+                ]
+            );
+
+            $chat->group_avatar = $uploaded['secure_url'];
+            $chat->save();
+
+            return response()->json([
+                'message' => 'Group picture updated successfully.',
+                'group_avatar' => $chat->fresh()->group_avatar,
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('Group avatar upload failed', [
+                'chat_id' => $chat->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Could not upload group picture. Please try again.',
+            ], 500);
+        }
     }
-}
-
 
     // ============================================================
     // ADD MEMBERS
@@ -866,6 +864,7 @@ public function updateAvatar(Request $request, $chatId)
                     'name' => $user->name,
                     'avatar_url' => $user->avatar_url ?? null,
                     'phone_number' => $user->phone_number ?? null,
+                    'verified_badge' => (bool) ($user->verified_badge ?? false), // NEW
                     'role' => $isOwner ? 'admin' : $participant->role,
                     'is_admin' => $isOwner || $participant->role === 'admin',
                     'is_owner' => $isOwner,

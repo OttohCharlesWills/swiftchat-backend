@@ -28,6 +28,9 @@ class User extends Authenticatable
         'otp_expires_at',
         'is_verified',
 
+        // Verified tick (set manually in the database only)
+        'verified_badge',
+
         // Preferences
         'theme',
         'font_id',
@@ -49,6 +52,7 @@ class User extends Authenticatable
         'otp_expires_at' => 'datetime',
         'last_seen_at' => 'datetime',
         'is_verified' => 'boolean',
+        'verified_badge' => 'boolean',
         'is_online' => 'boolean',
         'read_receipts_enabled' => 'boolean',
     ];
@@ -99,19 +103,22 @@ class User extends Authenticatable
         return $this->hasMany(UpdateBlockedContact::class);
     }
 
-    public function stickerPacks()
-{
-    return $this->belongsToMany(\App\Models\StickerPack::class, 'user_sticker_packs')
-        ->withPivot('position')
-        ->withTimestamps()
-        ->orderBy('user_sticker_packs.position');
-}
- 
-public function recentStickers()
-{
-    return $this->belongsToMany(\App\Models\Sticker::class, 'user_recent_stickers')
-        ->withPivot('use_count', 'last_used_at')
-        ->orderByDesc('user_recent_stickers.last_used_at');
-}
-}
+    // =========================
+    // STICKERS
+    // =========================
 
+    public function stickerPacks()
+    {
+        return $this->belongsToMany(\App\Models\StickerPack::class, 'user_sticker_packs')
+            ->withPivot('position')
+            ->withTimestamps()
+            ->orderBy('user_sticker_packs.position');
+    }
+
+    public function recentStickers()
+    {
+        return $this->belongsToMany(\App\Models\Sticker::class, 'user_recent_stickers')
+            ->withPivot('use_count', 'last_used_at')
+            ->orderByDesc('user_recent_stickers.last_used_at');
+    }
+}

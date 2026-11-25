@@ -214,7 +214,8 @@ class UpdateController extends Controller
 
         if (!empty($uuids)) {
             $repliesByUuid = Message::query()
-                ->with('sender:id,name,avatar_url')
+                // NEW: verified_badge added to the selected columns
+                ->with('sender:id,name,avatar_url,verified_badge')
                 ->whereIn('update_preview->update_uuid', $uuids)
                 ->where('sender_id', '!=', $userId)
                 ->where('is_deleted', false)
@@ -242,6 +243,8 @@ class UpdateController extends Controller
                     'id' => $m->sender?->id,
                     'name' => $m->sender?->name,
                     'avatar_url' => $m->sender?->avatar_url,
+                    // NEW
+                    'verified_badge' => (bool) ($m->sender?->verified_badge ?? false),
                 ],
             ])->values();
         });

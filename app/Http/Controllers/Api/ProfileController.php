@@ -40,27 +40,27 @@ class ProfileController extends Controller
     }
 
     public function updateAvatar(Request $request)
-{
-    $validator = Validator::make($request->all(), [
-        'file' => 'required|image|max:5120', // 5MB
-    ]);
+    {
+        $validator = Validator::make($request->all(), [
+            'file' => 'required|image|max:5120', // 5MB
+        ]);
 
-    if ($validator->fails()) {
-        return response()->json(['errors' => $validator->errors()], 422);
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $user = $request->user();
+
+        $uploaded = cloudinary()->uploadApi()->upload(
+            $request->file('file')->getRealPath(),
+            ['folder' => 'avatars']
+        );
+
+        $user->avatar_url = $uploaded['secure_url'];
+        $user->save();
+
+        return response()->json($user->fresh());
     }
-
-    $user = $request->user();
-
-    $uploaded = cloudinary()->uploadApi()->upload(
-        $request->file('file')->getRealPath(),
-        ['folder' => 'avatars']
-    );
-
-    $user->avatar_url = $uploaded['secure_url'];
-    $user->save();
-
-    return response()->json($user->fresh());
-}
 
     public function show(Request $request, \App\Models\User $user)
     {
@@ -71,6 +71,7 @@ class ProfileController extends Controller
             'bio' => $user->bio,
             'profile_link' => $user->profile_link,
             'phone_number' => $user->phone_number,
+            'verified_badge' => (bool) ($user->verified_badge ?? false),
         ]);
     }
 }

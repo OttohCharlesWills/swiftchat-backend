@@ -31,8 +31,14 @@ class NewMessage implements ShouldBroadcastNow
         return 'message.sent';
     }
 
-        public function broadcastWith(): array
+    public function broadcastWith(): array
     {
+        // Group chats show the sender as the name you saved (or the number),
+        // so the sender's phone number must be part of the payload - even if
+        // the User model hides it. (Same for the sender of a quoted message.)
+        $this->message->sender?->makeVisible('phone_number');
+        $this->message->replyTo?->sender?->makeVisible('phone_number');
+
         return [
             'id' => $this->message->id,
             'chat_id' => $this->message->chat_id,
